@@ -1,4 +1,18 @@
-# SIE Tender Intelligence | Prototype fonctionnel local
+# SIE-Tender-AI
+
+**Plateforme locale de préparation des réponses aux appels d'offres** — développée pour SIE (électricité CFO / CFA / SSI).
+
+SIE-Tender-AI centralise une consultation de bout en bout : import du DCE, analyse structurée des pièces (RC, questions-réponses, CCAP, cadre de réponse, CCTP), fiche de renseignement pré-remplie avec sources, alertes à traiter, métrés, demandes de prix, DPGF, mémoire technique et contrôle final. Tout tourne sur le poste ou le serveur de l'entreprise, sans service d'IA externe ni cloud ; l'IA locale (RAG sur les mémoires historiques) est prévue dans une phase ultérieure.
+
+> Nom de code historique : *SIE Tender Intelligence*.
+
+## Démarrer sur macOS
+
+Double-cliquer sur `LANCER_MAC.command` : il crée l'environnement Python hors d'iCloud (`~/venvs/sie-tender-intelligence`), installe les dépendances au premier lancement, exécute les tests puis démarre le serveur sur http://127.0.0.1:8000.
+
+---
+
+## Prototype fonctionnel local (documentation d'origine)
 
 **Version 1 de développement**, construite à partir de la maquette HTML V2 et des spécifications du 10 novembre 2026. L'interface originale est conservée. La persistance, les fichiers et certains traitements reposent sur un serveur Python **local**, sans API IA externe.
 
