@@ -17,6 +17,22 @@ else
   echo "Installation des dépendances (connexion Internet nécessaire, 1 à 2 minutes)..."
   "$PY" -m pip install --disable-pip-version-check -r requirements.txt pytest httpx || { echo "Échec de l'installation."; read -r; exit 1; }
 fi
+# Données (base + documents importés) HORS d'iCloud : une base SQLite synchronisée peut s'abîmer.
+DATA_DIR="${SIE_DATA_DIR:-$HOME/SIE_data}"
+if lsof -nP -iTCP:8000 -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "Un serveur SIE tourne déjà (port 8000). Fermez l'autre fenêtre du Terminal, puis relancez."
+  read -r; exit 1
+fi
+if [ ! -f "$DATA_DIR/sie.db" ] && [ -f data/sie.db ]; then
+  echo "Déplacement des données hors d'iCloud vers $DATA_DIR ..."
+  mkdir -p "$DATA_DIR"
+  for x in sie.db sie.db-wal sie.db-shm files texte .pending; do
+    if [ -e "data/$x" ]; then mv "data/$x" "$DATA_DIR/" || { echo "Échec du déplacement de $x"; read -r; exit 1; }; fi
+  done
+  echo "Données déplacées."
+fi
+export SIE_DATA_DIR="$DATA_DIR"
+echo "Données : $SIE_DATA_DIR"
 echo "Tests automatiques..."
 PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests -q -p no:cacheprovider 2>&1 | tee data/.derniers_tests.txt
 echo

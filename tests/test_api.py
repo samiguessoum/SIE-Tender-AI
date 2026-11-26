@@ -126,3 +126,34 @@ def test_import_par_blocs_rattache_a_sa_consultation(client):
     assert r.json()['complete'] is True
     doc=r.json()['file']
     assert client.get(f"/api/files/AO4/{doc['id']}/download").content==b'debut fin'
+
+
+def test_dpgf_acheteur_de_bout_en_bout(client, tmp_path):
+    from openpyxl import Workbook
+    wb=Workbook(); ws=wb.active; ws.title='Lot 3'
+    ws.append(['N°','DESIGNATION','Unité','Qté','PU HT','Prix Total HT'])
+    ws.append(['1','COURANT FORT']); ws.append(['1.1','Tableau','U']); ws.append(['1.2','Câbles','ml'])
+    ws.append([None,'=CONCATENATE("Sous Total ",A2,".",B2)']); ws.append([None,'TOTAL BASE HT'])
+    mem=io.BytesIO(); wb.save(mem)
+    r=client.post('/api/files/AO6/upload',files={'file':('DPGF lot 3.xlsx',mem.getvalue(),'application/octet-stream')},data={'category':'dce','relpath':'DCE/DPGF/AO6 DPGF lot 3.xlsx'})
+    assert r.status_code==200,r.text
+    fichiers=client.get('/api/dpgf/AO6').json()['fichiers']
+    assert len(fichiers)==1 and fichiers[0]['lot']=='3'
+    doc=fichiers[0]['id']
+    vue=client.get(f'/api/dpgf/AO6/{doc}').json()
+    assert vue['controles']['postes']==2 and not vue['controles']['pret']
+    # une ligne qui n'est pas un poste est refusée
+    assert client.put(f'/api/dpgf/AO6/{doc}/saisies',json={'saisies':[{'ligne':2,'qte':1}]}).status_code==400
+    assert client.put(f'/api/dpgf/AO6/{doc}/saisies',json={'saisies':[{'ligne':3,'qte':-1}]}).status_code==400
+    vue=client.put(f'/api/dpgf/AO6/{doc}/saisies',json={'saisies':[{'ligne':3,'qte':2,'pu':150},{'ligne':4,'qte':12.5,'pu':4}]}).json()
+    assert vue['controles']['pret'] and vue['controles']['total_general']==350
+    # mise à jour partielle : seul le PU change, la quantité est conservée
+    vue=client.put(f'/api/dpgf/AO6/{doc}/saisies',json={'saisies':[{'ligne':4,'pu':5}]}).json()
+    assert vue['saisies']['4']['qte']==12.5 and vue['controles']['total_general']==362.5
+    props=client.post(f'/api/dpgf/AO6/{doc}/rapprocher',json={'lignes':[{'reference':'1.2','designation':'x','quantite':20}]}).json()['propositions']
+    assert props[0]['row']==4
+    exp=client.get(f'/api/dpgf/AO6/{doc}/export')
+    assert exp.status_code==200 and exp.headers['x-sie-total']=='362.5'
+    out=load_workbook(io.BytesIO(exp.content))['Lot 3']
+    assert out['D3'].value==2 and out['E3'].value==150 and out['F3'].value=='=D3*E3' and out['F6'].value=='=SUMPRODUCT(D2:D5,E2:E5)'
+    assert 'dpgf_export' in [j['action'] for j in client.get('/api/journal/AO6').json()['journal']]

@@ -482,3 +482,93 @@ fiche=function(){
  return sieFicheAvantS1().replace('<b>Maquette :</b> aucun document n’est analysé automatiquement. Complétez ou corrigez les informations à partir des pièces du DCE.',
   '<b>Pré-remplissage :</b> dans « Analyse du DCE », le bouton « Pré-remplir la fiche » reprend les informations trouvées dans le DCE, avec leur source. Vérifiez et corrigez chaque champ.');
 };
+
+// ============================================================================
+// Sprint S2 — DPGF de l'acheteur : saisie des quantités et PU, contrôles, génération du classeur à remettre.
+// ============================================================================
+let sieDpgfA={};            // par consultation : {fichiers, docId, vue, propositions, chargement}
+let sieDpgfTimer=null, sieDpgfFile={};
+const sieNb=(v,d=2)=>v==null||v===''?'':Number(v).toLocaleString('fr-FR',{minimumFractionDigits:d,maximumFractionDigits:d});
+function sieDA(){const id=sieCurrentId();return sieDpgfA[id]||(sieDpgfA[id]={})}
+async function sieDpgfCharger(docId){
+ const id=sieCurrentId(),st=sieDA();st.chargement=true;
+ try{
+  if(!st.fichiers)st.fichiers=(await sieJson('/api/dpgf/'+encodeURIComponent(id))).fichiers;
+  const cible=docId||st.docId||(st.fichiers.find(f=>f.lot==='3')||st.fichiers[0]||{}).id;
+  if(cible){st.docId=cible;st.vue=await sieJson('/api/dpgf/'+encodeURIComponent(id)+'/'+cible);st.propositions=null}
+ }catch(e){st.erreur=e.message}
+ st.chargement=false;if(state.view==='dpgf'&&sieCurrentId()===id)render();
+}
+function sieDpgfSaisir(ligne,champ,valeur){
+ const st=sieDA();const v=String(valeur).trim()===''?null:Number(String(valeur).replace(/\s/g,'').replace(',','.'));
+ if(v!==null&&(!Number.isFinite(v)||v<0)){alert('Valeur invalide : nombre positif attendu.');return}
+ sieDpgfFile[ligne]=Object.assign(sieDpgfFile[ligne]||{ligne},{[champ]:v,['origine_'+champ]:'Saisie manuelle'});
+ clearTimeout(sieDpgfTimer);sieDpgfTimer=setTimeout(()=>sieDpgfEnvoyer(),700);
+}
+async function sieDpgfEnvoyer(items){
+ const st=sieDA(),id=sieCurrentId();const lot=items||Object.values(sieDpgfFile);sieDpgfFile={};if(!lot.length||!st.docId)return;
+ try{st.vue=await sieJson('/api/dpgf/'+encodeURIComponent(id)+'/'+st.docId+'/saisies',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({saisies:lot})});
+  const y=window.scrollY;render();window.scrollTo(0,y);toast(lot.length+' ligne(s) enregistrée(s) dans la DPGF.')}
+ catch(e){alert('Enregistrement impossible : '+e.message)}
+}
+function sieDpgfSources(type){
+ const id=sieCurrentId();
+ if(type==='metres')return (metresStore[id]||[]).flatMap(m=>(m.rows||[]).map(r=>({reference:r.reference,designation:r.designation,unite:r.unite,
+  quantite:Number(String(r.quantite||'').replace(/\s/g,'').replace(',','.')),origine:'Métré : '+m.fileName+' l.'+r.ligne}))).filter(s=>s.designation&&Number.isFinite(s.quantite));
+ return (state.lines||[]).map(l=>({reference:l.id,designation:l.name,unite:l.unit,quantite:l.qty,pu:l.price,origine:'Chiffrage interne : '+l.id}));
+}
+async function sieDpgfRapprocher(type){
+ const st=sieDA(),id=sieCurrentId(),src=sieDpgfSources(type);
+ if(!src.length){alert(type==='metres'?'Aucun métré importé pour cette consultation (rubrique « Décomptes & métrés »).':'Aucune ligne dans le chiffrage interne.');return}
+ try{const r=await sieJson('/api/dpgf/'+encodeURIComponent(id)+'/'+st.docId+'/rapprocher',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lignes:src})});
+  st.propositions={type,liste:r.propositions.map(p=>({...p,coche:p.score>=0.95&&!p.unite_differente}))};render();
+  toast(r.propositions.length+' correspondance(s) proposée(s) sur '+r.postes+' postes : vérifiez avant d’appliquer.')}
+ catch(e){alert(e.message)}
+}
+function sieDpgfAppliquer(){
+ const st=sieDA();if(!st.propositions)return;const t=st.propositions.type;
+ const items=st.propositions.liste.filter(p=>p.coche).map(p=>{const s=p.source,it={ligne:p.row};
+  if(t==='metres'||s.quantite!=null){it.qte=Number(s.quantite);it.origine_qte=s.origine}
+  if(t==='prix'&&s.pu!=null){it.pu=Number(s.pu);it.origine_pu=s.origine}return it}).filter(it=>it.qte!=null||it.pu!=null);
+ if(!items.length){alert('Aucune proposition cochée.');return}
+ if(!confirm(items.length+' poste(s) vont être mis à jour dans la DPGF. Les valeurs existantes de ces postes seront remplacées. Continuer ?'))return;
+ st.propositions=null;sieDpgfEnvoyer(items);
+}
+function sieDpgfExporter(){
+ const st=sieDA(),c=st.vue&&st.vue.controles;if(!c)return;
+ if(!c.pret&&!confirm(`DPGF incomplète : ${c.sans_quantite.length} poste(s) sans quantité, ${c.sans_prix.length} sans prix.\nGénérer quand même un fichier de travail ?`))return;
+ location.href='/api/dpgf/'+encodeURIComponent(sieCurrentId())+'/'+st.docId+'/export';toast('Génération du classeur de l’acheteur rempli…');
+}
+function sieDpgfSection(){
+ const st=sieDA();
+ if(!st.fichiers&&!st.chargement){sieDpgfCharger();}
+ const head=`<div class="card-head"><div><h3>DPGF de l’acheteur — fichier à remettre</h3><small>Classeur fourni dans le DCE : quantités et PU saisis ici, formules et totaux écrits par l’outil. Macros, logos et autres feuilles sont conservés à l’identique.</small></div>${st.fichiers&&st.fichiers.length?`<select class="field" onchange="sieDpgfCharger(this.value)">${st.fichiers.map(f=>`<option value="${f.id}"${f.id===st.docId?' selected':''}>${esc(f.lot?('Lot '+f.lot.replace('ML','macro-lot ')):'')} — ${esc(f.filename)}${f.saisies?' ('+f.saisies+' saisies)':''}</option>`).join('')}</select>`:''}</div>`;
+ if(st.chargement||!st.fichiers)return `<section class="card sectiongap">${head}<div class="card-body"><p class="small">Chargement…</p></div></section>`;
+ if(!st.fichiers.length)return `<section class="card sectiongap">${head}<div class="card-body"><p>Aucune DPGF (.xlsx / .xlsm) trouvée dans le DCE de cette consultation.</p>${st.erreur?`<p class="small">${esc(st.erreur)}</p>`:''}</div></section>`;
+ const v=st.vue;if(!v)return `<section class="card sectiongap">${head}<div class="card-body"><p class="small">${esc(st.erreur||'Chargement…')}</p></div></section>`;
+ const c=v.controles,sz=v.saisies,lignes=v.structure.lignes;
+ const props=st.propositions?`<div class="callout" style="margin:12px 0"><b>${st.propositions.liste.length} correspondance(s) proposée(s)</b> — ${st.propositions.type==='metres'?'quantités issues des métrés':'prix et quantités du chiffrage interne'}. Rien n’est appliqué sans votre validation.
+  <div style="max-height:300px;overflow:auto;margin-top:8px"><table><thead><tr><th></th><th>Poste DPGF</th><th>Source proposée</th><th>Valeur</th><th>Score</th></tr></thead><tbody>${st.propositions.liste.map((p,i)=>`<tr><td><input type="checkbox" class="check" ${p.coche?'checked':''} onchange="sieDA().propositions.liste[${i}].coche=this.checked"></td><td><b>${esc(p.numero)}</b> ${esc(p.designation.slice(0,70))} <small>(${esc(p.unite)})</small></td><td>${esc((p.source.designation||'').slice(0,70))}<br><small>${esc(p.source.origine||'')} · ${esc(p.mode)}</small>${p.unite_differente?' <span class="badge red">unité différente</span>':''}</td><td class="money">${p.source.quantite!=null?'Q '+sieNb(p.source.quantite,0):''}${p.source.pu!=null?'<br>PU '+sieNb(p.source.pu):''}</td><td>${Math.round(p.score*100)} %</td></tr>`).join('')}</tbody></table></div>
+  <div class="two-btns" style="margin-top:8px"><button class="btn primary" onclick="sieDpgfAppliquer()">Appliquer la sélection</button><button class="btn" onclick="sieDA().propositions=null;render()">Annuler</button></div></div>`:'';
+ const corps=lignes.map(l=>{const r=l.row,s=sz[r]||{};
+  if(l.type==='titre')return `<tr style="background:#f7fafc"><td class="strong">${esc(l.numero)}</td><td colspan="5" class="strong" style="padding-left:${8+((l.niveau||1)-1)*14}px">${esc(l.designation)}</td></tr>`;
+  if(l.type==='texte')return `<tr><td></td><td colspan="5" class="small">${esc(l.designation)}</td></tr>`;
+  if(['sous_total','rappel','total'].includes(l.type))return `<tr class="totalfoot"><td></td><td colspan="4" ${l.type==='total'?'class="strong"':''}>${esc(l.designation)}</td><td class="money strong">${sieNb(c.totaux[r])} €</td></tr>`;
+  const manque=l.type==='poste'&&(s.qte==null||s.pu==null);
+  return `<tr${manque?' style="background:#fffaf2"':''}><td>${esc(l.numero)}</td><td>${esc(l.designation)}${l.type==='mention'?` <span class="badge gray">${esc(l.unite)}</span>`:''}${s.origine_qte&&s.origine_qte!=='Saisie manuelle'?`<br><small>Q : ${esc(s.origine_qte)}</small>`:''}${s.origine_pu&&s.origine_pu!=='Saisie manuelle'?`<br><small>PU : ${esc(s.origine_pu)}</small>`:''}</td><td>${esc(l.type==='mention'?'':l.unite)}</td>
+   <td><input class="field qty" value="${s.qte??''}" onchange="sieDpgfSaisir(${r},'qte',this.value)" ${l.type==='mention'?'placeholder="—"':''}></td>
+   <td><input class="field price" value="${s.pu??''}" onchange="sieDpgfSaisir(${r},'pu',this.value)" ${l.type==='mention'?'placeholder="—"':''}></td>
+   <td class="money">${c.montants[r]!=null?sieNb(c.montants[r])+' €':''}</td></tr>`}).join('');
+ const etat=c.pret?'<span class="badge green">Tous les postes sont chiffrés</span>':`<span class="badge amber">${c.postes-c.postes_complets} poste(s) incomplet(s)</span>`;
+ return `<section class="card sectiongap">${head}<div class="card-body">
+  <div class="grid3"><div class="mini"><small>Total HT calculé</small><strong>${sieNb(c.total_general)} €</strong></div><div class="mini"><small>Postes chiffrés</small><strong>${c.postes_complets} / ${c.postes}</strong></div><div class="mini"><small>Contrôles</small><div>${etat}</div><div class="small" style="margin-top:6px">${c.sans_quantite.length} sans quantité · ${c.sans_prix.length} sans prix${c.mentions_chiffrees.length?' · '+c.mentions_chiffrees.length+' ligne(s) SO/PM chiffrée(s)':''}</div></div></div>
+  <div class="two-btns" style="margin:14px 0"><button class="btn" onclick="sieDpgfRapprocher('metres')">⇄ Reprendre les quantités des métrés</button><button class="btn" onclick="sieDpgfRapprocher('prix')">⇄ Reprendre les prix du chiffrage interne</button><button class="btn primary" onclick="sieDpgfExporter()">↓ Générer la DPGF remplie (${esc((v.document.filename.split('.').pop()||'').toUpperCase())})</button></div>
+  <p class="small">Feuille « ${esc(v.structure.feuille)} » · ${lignes.length} lignes lues · Prix total = Qté × PU ; sous-totaux en SOUS.TOTAL (sans double compte) ; total du lot = SOMMEPROD. Le classeur original du DCE n’est jamais modifié : un nouveau fichier est généré à chaque export. Les prix de vente restent à valider par SIE.</p>
+  ${props}
+  <div class="table-wrap" style="max-height:640px;overflow:auto"><table><thead><tr><th>N°</th><th>Désignation</th><th>U</th><th class="numcol">Qté</th><th class="numcol">PU HT</th><th class="numcol">Total HT</th></tr></thead><tbody>${corps}</tbody></table></div>
+ </div></section>`;
+}
+const sieDpgfAvantS2=dpgf;
+dpgf=function(){return sieDpgfAvantS2()+sieDpgfSection()};
+const sieSelectAvantS2=sieSelectCase;
+sieSelectCase=function(i){sieSelectAvantS2(i);delete sieDpgfA[sieCurrentId()]};

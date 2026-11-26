@@ -28,6 +28,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 
 import analyse_dce
+import dpgf_acheteur
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get('SIE_DATA_DIR', ROOT / 'data')).resolve()
@@ -71,6 +72,16 @@ def setup():
         cx.execute('CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, '
                    'consultation TEXT, action TEXT NOT NULL, detail TEXT)')
         cx.execute('CREATE INDEX IF NOT EXISTS idx_journal_consultation ON journal(consultation)')
+        # Quantités et prix saisis pour la DPGF de l'acheteur (une ligne du classeur = un poste)
+        cx.execute('CREATE TABLE IF NOT EXISTS dpgf_saisies (consultation TEXT NOT NULL, doc_id TEXT NOT NULL, ligne INTEGER NOT NULL, '
+                   'qte REAL, pu REAL, origine_qte TEXT NOT NULL DEFAULT \'\', origine_pu TEXT NOT NULL DEFAULT \'\', '
+                   'updated TEXT NOT NULL, PRIMARY KEY (consultation, doc_id, ligne))')
+        # Les chemins des fichiers sont absolus : si le dossier de données a été déplacé (ex. hors d'iCloud),
+        # on les recalcule à partir de l'emplacement actuel, sans rien perdre.
+        for row in cx.execute('SELECT id, consultation, storepath FROM documents').fetchall():
+            attendu = FILES / row[1] / row[0]
+            if row[2] != str(attendu) and not Path(row[2]).exists() and attendu.exists():
+                cx.execute('UPDATE documents SET storepath=? WHERE id=?', (str(attendu), row[0]))
 setup()
 
 
@@ -479,6 +490,135 @@ def journal_liste(consultation: str, limit: int = 200):
         rows=cx.execute('SELECT ts,action,detail FROM journal WHERE consultation=? ORDER BY id DESC LIMIT ?',
                         (consultation,max(1,min(limit,2000)))).fetchall()
     return {'journal':[dict(r) for r in rows]}
+
+
+
+# ---------------------------------------------------------------------------- DPGF de l'acheteur (sprint S2)
+DPGF_EXT = ('.xlsx', '.xlsm')
+
+
+def _dpgf_doc(consultation, doc_id):
+    row = get_doc(consultation, doc_id)
+    if not row['filename'].lower().endswith(DPGF_EXT):
+        raise HTTPException(400, 'La DPGF doit être un classeur .xlsx ou .xlsm')
+    return row
+
+
+def _dpgf_structure(row):
+    try:
+        return dpgf_acheteur.lire(row['storepath'])
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    except Exception as exc:
+        raise HTTPException(422, f'Classeur illisible : {exc}')
+
+
+def _dpgf_saisies(consultation, doc_id):
+    with db() as cx:
+        rows = cx.execute('SELECT * FROM dpgf_saisies WHERE consultation=? AND doc_id=?', (consultation, doc_id)).fetchall()
+    return {r['ligne']: {'qte': r['qte'], 'pu': r['pu'], 'origine_qte': r['origine_qte'], 'origine_pu': r['origine_pu'],
+                         'updated': r['updated']} for r in rows}
+
+
+def _dpgf_vue(consultation, row):
+    structure = _dpgf_structure(row)
+    saisies = _dpgf_saisies(consultation, row['id'])
+    controles = dpgf_acheteur.calculer(structure, saisies)
+    controles['montants'] = {str(k): v for k, v in controles['montants'].items()}
+    controles['totaux'] = {str(k): v for k, v in controles['totaux'].items()}
+    return {'document': row_public(row), 'lot': analyse_dce.detecter_lot(row['relpath']), 'structure': structure,
+            'saisies': {str(k): v for k, v in saisies.items()}, 'controles': controles}
+
+
+@app.get('/api/dpgf/{consultation}')
+def dpgf_fichiers(consultation: str):
+    # Classeurs de prix de l'acheteur présents dans le DCE (ou ajoutés en pièce de réponse).
+    safe_id(consultation)
+    with db() as cx:
+        rows = cx.execute("SELECT * FROM documents WHERE consultation=? AND category IN ('dce','reponse') ORDER BY relpath",
+                          (consultation,)).fetchall()
+    out = []
+    for r in rows:
+        if r['filename'].lower().endswith(DPGF_EXT) and analyse_dce.classer(r['relpath']) == 'DPGF':
+            with db() as cx:
+                n = cx.execute('SELECT COUNT(*) FROM dpgf_saisies WHERE consultation=? AND doc_id=?', (consultation, r['id'])).fetchone()[0]
+            out.append({**row_public(r), 'lot': analyse_dce.detecter_lot(r['relpath']), 'saisies': n})
+    return {'fichiers': out}
+
+
+@app.get('/api/dpgf/{consultation}/{doc_id}')
+def dpgf_detail(consultation: str, doc_id: str):
+    return _dpgf_vue(consultation, _dpgf_doc(consultation, doc_id))
+
+
+@app.put('/api/dpgf/{consultation}/{doc_id}/saisies')
+async def dpgf_enregistrer(consultation: str, doc_id: str, request: Request):
+    # Enregistre des quantités / PU saisis ou validés par SIE. Une valeur null efface la saisie.
+    row = _dpgf_doc(consultation, doc_id)
+    try:
+        body = await request.json()
+        items = body['saisies']
+        assert isinstance(items, list) and len(items) <= 5000
+    except Exception:
+        raise HTTPException(400, 'Format attendu : {"saisies": [{"ligne": 21, "qte": 3, "pu": 120.5}]}')
+    structure = _dpgf_structure(row)
+    chiffrables = {l['row'] for l in structure['lignes'] if l['type'] in ('poste', 'mention')}
+    ts = timestamp()
+    modifs = 0
+    with LOCK, db() as cx:
+        for it in items:
+            ligne = int(it.get('ligne', 0))
+            if ligne not in chiffrables:
+                raise HTTPException(400, f'La ligne {ligne} n’est pas un poste chiffrable de la DPGF')
+            old = cx.execute('SELECT * FROM dpgf_saisies WHERE consultation=? AND doc_id=? AND ligne=?', (consultation, doc_id, ligne)).fetchone()
+            q = it['qte'] if 'qte' in it else (old['qte'] if old else None)
+            p = it['pu'] if 'pu' in it else (old['pu'] if old else None)
+            for v in (q, p):
+                if v is not None and (not isinstance(v, (int, float)) or v < 0 or v > 1e9):
+                    raise HTTPException(400, f'Valeur invalide ligne {ligne}')
+            oq = it.get('origine_qte', old['origine_qte'] if old else '') if 'qte' in it else (old['origine_qte'] if old else '')
+            op = it.get('origine_pu', old['origine_pu'] if old else '') if 'pu' in it else (old['origine_pu'] if old else '')
+            if q is None and p is None:
+                cx.execute('DELETE FROM dpgf_saisies WHERE consultation=? AND doc_id=? AND ligne=?', (consultation, doc_id, ligne))
+            else:
+                cx.execute('INSERT INTO dpgf_saisies(consultation,doc_id,ligne,qte,pu,origine_qte,origine_pu,updated) VALUES (?,?,?,?,?,?,?,?) '
+                           'ON CONFLICT(consultation,doc_id,ligne) DO UPDATE SET qte=excluded.qte, pu=excluded.pu, '
+                           'origine_qte=excluded.origine_qte, origine_pu=excluded.origine_pu, updated=excluded.updated',
+                           (consultation, doc_id, ligne, q, p, (oq or '')[:200], (op or '')[:200], ts))
+            modifs += 1
+    journaliser(consultation, 'dpgf_saisie', {'fichier': row['relpath'], 'lignes': modifs})
+    return _dpgf_vue(consultation, row)
+
+
+@app.post('/api/dpgf/{consultation}/{doc_id}/rapprocher')
+async def dpgf_rapprocher(consultation: str, doc_id: str, request: Request):
+    # Propose des correspondances entre les postes de la DPGF et des lignes de métrés ou de prix. N'écrit rien.
+    row = _dpgf_doc(consultation, doc_id)
+    try:
+        body = await request.json()
+        sources = [s for s in body['lignes'] if isinstance(s, dict)][:20000]
+    except Exception:
+        raise HTTPException(400, 'Format attendu : {"lignes": [{"reference": "5.3.1", "designation": "...", "quantite": 2}]}')
+    structure = _dpgf_structure(row)
+    props = dpgf_acheteur.rapprocher(structure, sources, seuil=float(body.get('seuil', 0.82)))
+    return {'propositions': props, 'postes': sum(1 for l in structure['lignes'] if l['type'] == 'poste')}
+
+
+@app.get('/api/dpgf/{consultation}/{doc_id}/export')
+def dpgf_export(consultation: str, doc_id: str):
+    # Copie du classeur de l'acheteur avec quantités, PU et formules. Le fichier original n'est jamais modifié.
+    row = _dpgf_doc(consultation, doc_id)
+    structure = _dpgf_structure(row)
+    saisies = _dpgf_saisies(consultation, doc_id)
+    ext = Path(row['filename']).suffix.lower()
+    sortie = TEMP / (uuid.uuid4().hex + ext)
+    rapport = dpgf_acheteur.generer(row['storepath'], sortie, structure, saisies)
+    journaliser(consultation, 'dpgf_export', {'fichier': row['relpath'], 'total': rapport['total_general'],
+                                              'postes_complets': rapport['postes_complets'], 'postes': rapport['postes']})
+    nom = Path(row['filename']).stem + '_SIE' + ext
+    media = 'application/vnd.ms-excel.sheet.macroEnabled.12' if ext == '.xlsm' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    return FileResponse(sortie, filename=nom, media_type=media, background=BackgroundTask(lambda: sortie.unlink(missing_ok=True)),
+                        headers={'X-SIE-Total': str(rapport['total_general']), 'X-SIE-Pret': '1' if rapport['pret'] else '0'})
 
 
 def workbook_for_case(consultation, snapshot):
