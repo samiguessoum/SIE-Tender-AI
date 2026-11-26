@@ -157,3 +157,26 @@ def test_dpgf_acheteur_de_bout_en_bout(client, tmp_path):
     out=load_workbook(io.BytesIO(exp.content))['Lot 3']
     assert out['D3'].value==2 and out['E3'].value==150 and out['F3'].value=='=D3*E3' and out['F6'].value=='=SUMPRODUCT(D2:D5,E2:E5)'
     assert 'dpgf_export' in [j['action'] for j in client.get('/api/journal/AO6').json()['journal']]
+
+
+def test_controle_final_et_derogation(client):
+    rc=('Règlement de la consultation\nConsultation n° CTL-1\nDate limite de remise des plis 15 / 12 / 2099 à 12 heures\n'
+        'Les candidats doivent obligatoirement effectuer une visite du site.\n'
+        'Le candidat remet l’attestation de visite signée et le cadre de réponse, sous peine de rejet de l’offre.\n').encode('utf-8')
+    assert client.post('/api/files/AO7/upload',files={'file':('RC.txt',rc,'text/plain')},data={'category':'dce','relpath':'DCE/CTL-1 RC.txt'}).status_code==200
+    client.post('/api/analyse/AO7')
+    r=client.get('/api/controle/AO7').json()
+    assert r['verdict']=='vide'
+    assert client.post('/api/files/AO7/upload',files={'file':('Cadre de reponse.pdf',b'%PDF-1.4 x','application/pdf')},data={'category':'reponse','relpath':'Offre/Cadre de reponse.pdf'}).status_code==200
+    r=client.get('/api/controle/AO7').json()
+    visite=next(p for p in r['points'] if p['titre'].startswith('Attestation de visite'))
+    assert visite['niveau']=='bloquant' and r['verdict']=='bloque'
+    assert client.post('/api/controle/AO7/derogations',json={'code':visite['code'],'justification':'court'}).status_code==400
+    r=client.post('/api/controle/AO7/derogations',json={'code':visite['code'],'justification':'Attestation remise en main propre le 12/12','auteur':'Directeur'}).json()
+    assert not any(p['niveau']=='bloquant' for p in r['points'] if p['code']==visite['code'])
+    data=client.get('/api/export/AO7/dossier.zip')
+    with zipfile.ZipFile(io.BytesIO(data.content)) as z:
+        assert 'Suivi/controle_final.json' in z.namelist()
+        assert 'DÉROGATION' in z.read('00_A_LIRE_AVANT_DEPOT.txt').decode('utf-8')
+    assert client.delete('/api/controle/AO7/derogations',params={'code':visite['code']}).status_code==200
+    assert 'controle_derogation' in [j['action'] for j in client.get('/api/journal/AO7').json()['journal']]

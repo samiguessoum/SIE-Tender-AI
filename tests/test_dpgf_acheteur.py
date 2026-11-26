@@ -86,14 +86,15 @@ def test_dpgf_polytechnique_lot3(tmp_path):
     st = D.lire(DPGF_LOT3)
     assert st['feuille'] == 'Lot ELECTRICITE' and st['entete'] == 11
     postes = [l['row'] for l in st['lignes'] if l['type'] == 'poste']
-    assert len(postes) == 130
+    assert len(postes) == 118      # 130 lignes avec unité, dont 12 « cis » (compris ailleurs)
+    assert sum(1 for l in st['lignes'] if l['type'] == 'mention') == 21
     total = next(l for l in st['lignes'] if l['type'] == 'total')
     assert total['row'] == 257
     pl = D.plages_sous_totaux(st)
     assert pl[179] == (14, 178) and pl[255] == (14, 179) and pl[256] == pl[251] == (181, 250)
     out = tmp_path / 'lot3_SIE.xlsm'
     rap = D.generer(DPGF_LOT3, out, st, {r: {'qte': 2, 'pu': 10.5} for r in postes})
-    assert rap['pret'] and rap['total_general'] == 130 * 21
+    assert rap['pret'] and rap['total_general'] == 118 * 21
     # Seules la feuille de prix et quelques parties techniques changent : macros, images, autres feuilles identiques
     a, b = zipfile.ZipFile(DPGF_LOT3), zipfile.ZipFile(out)
     assert set(a.namelist()) - set(b.namelist()) == {'xl/calcChain.xml'}
@@ -102,7 +103,7 @@ def test_dpgf_polytechnique_lot3(tmp_path):
                          'xl/worksheets/sheet3.xml', 'xl/worksheets/sheet4.xml'}
     assert hashlib.sha256(a.read('xl/vbaProject.bin')).digest() == hashlib.sha256(b.read('xl/vbaProject.bin')).digest()
     feuille = b.read('xl/worksheets/sheet4.xml').decode()
-    assert '<c r="F257" s="111"><f>SUMPRODUCT(D12:D256,E12:E256)</f><v>2730</v></c>' in feuille
+    assert '<c r="F257" s="111"><f>SUMPRODUCT(D12:D256,E12:E256)</f><v>2478</v></c>' in feuille
     assert re.search(r'<c r="F21"[^>]*><f>D21\*E21</f><v>21</v></c>', feuille)
 
 

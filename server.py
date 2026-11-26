@@ -29,6 +29,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 import analyse_dce
 import dpgf_acheteur
+import controle_final
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get('SIE_DATA_DIR', ROOT / 'data')).resolve()
@@ -76,6 +77,9 @@ def setup():
         cx.execute('CREATE TABLE IF NOT EXISTS dpgf_saisies (consultation TEXT NOT NULL, doc_id TEXT NOT NULL, ligne INTEGER NOT NULL, '
                    'qte REAL, pu REAL, origine_qte TEXT NOT NULL DEFAULT \'\', origine_pu TEXT NOT NULL DEFAULT \'\', '
                    'updated TEXT NOT NULL, PRIMARY KEY (consultation, doc_id, ligne))')
+        # Dérogations formalisées du contrôle final (un point levé = une justification et un auteur)
+        cx.execute('CREATE TABLE IF NOT EXISTS controle_derogations (consultation TEXT NOT NULL, code TEXT NOT NULL, '
+                   'justification TEXT NOT NULL, auteur TEXT NOT NULL DEFAULT \'\', created TEXT NOT NULL, PRIMARY KEY (consultation, code))')
         # Les chemins des fichiers sont absolus : si le dossier de données a été déplacé (ex. hors d'iCloud),
         # on les recalcule à partir de l'emplacement actuel, sans rien perdre.
         for row in cx.execute('SELECT id, consultation, storepath FROM documents').fetchall():
@@ -621,6 +625,83 @@ def dpgf_export(consultation: str, doc_id: str):
                         headers={'X-SIE-Total': str(rapport['total_general']), 'X-SIE-Pret': '1' if rapport['pret'] else '0'})
 
 
+
+# ---------------------------------------------------------------------------- Contrôle final (sprint S5)
+CATEGORIES_DEPOT = ('reponse', 'memoire', 'autre')
+
+
+def _lots_fiche(consultation):
+    etat = get_state() or {}
+    return ((etat.get('fiches') or {}).get(consultation) or (etat.get('state', {}).get('fiches') or {}).get(consultation) or {})
+
+
+def _controle(consultation):
+    with db() as cx:
+        an = cx.execute('SELECT resultat FROM analyses WHERE consultation=? ORDER BY id DESC LIMIT 1', (consultation,)).fetchone()
+        docs = [dict(r) for r in cx.execute('SELECT * FROM documents WHERE consultation=? ORDER BY relpath', (consultation,)).fetchall()]
+        derog = {r['code']: {'justification': r['justification'], 'auteur': r['auteur'], 'created': r['created']}
+                 for r in cx.execute('SELECT * FROM controle_derogations WHERE consultation=?', (consultation,)).fetchall()}
+    analyse = json.loads(an['resultat']) if an else None
+    deposes = [d for d in docs if d['category'] in CATEGORIES_DEPOT]
+    dpgf = []
+    for d in docs:
+        if not d['filename'].lower().endswith(DPGF_EXT) or analyse_dce.classer(d['relpath']) != 'DPGF':
+            continue
+        lot = analyse_dce.detecter_lot(d['relpath'])
+        try:
+            st = dpgf_acheteur.lire(d['storepath'])
+        except Exception:
+            continue
+        if d['category'] == 'dce':
+            ctrl = dpgf_acheteur.calculer(st, _dpgf_saisies(consultation, d['id']))
+            dpgf.append({'lot': lot, 'origine': 'outil', 'filename': d['filename'], 'relpath': d['relpath'], 'controles': ctrl})
+        elif d['category'] in CATEGORIES_DEPOT:
+            # DPGF remplie hors de l'outil et déposée : on contrôle ses propres valeurs
+            propres = {l['row']: {'qte': l['qte'], 'pu': l['pu']} for l in st['lignes'] if l['type'] in ('poste', 'mention')}
+            dpgf.append({'lot': lot, 'origine': 'depose', 'filename': d['filename'], 'relpath': d['relpath'],
+                         'controles': dpgf_acheteur.calculer(st, propres)})
+    for x in dpgf:
+        x['controles'] = {k: v for k, v in x['controles'].items() if k not in ('montants', 'totaux')}
+    return controle_final.controler(analyse=analyse, deposes=deposes, alertes=_alertes(consultation),
+                                    fiche=_lots_fiche(consultation), dpgf=dpgf, derogations=derog)
+
+
+@app.get('/api/controle/{consultation}')
+def controle_lancer(consultation: str):
+    safe_id(consultation)
+    return _controle(consultation)
+
+
+@app.post('/api/controle/{consultation}/derogations')
+async def controle_deroger(consultation: str, request: Request):
+    # Dérogation formalisée : lève un point du contrôle, avec justification et auteur tracés au journal.
+    safe_id(consultation)
+    try:
+        body = await request.json()
+        code, justif, auteur = str(body['code'])[:200], str(body['justification']).strip()[:2000], str(body.get('auteur', '')).strip()[:120]
+    except Exception:
+        raise HTTPException(400, 'Format attendu : {"code": "...", "justification": "...", "auteur": "..."}')
+    if len(justif) < 10:
+        raise HTTPException(400, 'Justification trop courte (10 caractères minimum)')
+    with LOCK, db() as cx:
+        cx.execute('INSERT INTO controle_derogations(consultation,code,justification,auteur,created) VALUES (?,?,?,?,?) '
+                   'ON CONFLICT(consultation,code) DO UPDATE SET justification=excluded.justification, auteur=excluded.auteur, '
+                   'created=excluded.created', (consultation, code, justif, auteur, timestamp()))
+    journaliser(consultation, 'controle_derogation', {'code': code, 'auteur': auteur, 'justification': justif})
+    return _controle(consultation)
+
+
+@app.delete('/api/controle/{consultation}/derogations')
+def controle_annuler_derogation(consultation: str, code: str):
+    safe_id(consultation)
+    with LOCK, db() as cx:
+        n = cx.execute('DELETE FROM controle_derogations WHERE consultation=? AND code=?', (consultation, code)).rowcount
+    if not n:
+        raise HTTPException(404, 'Dérogation introuvable')
+    journaliser(consultation, 'controle_derogation_annulee', {'code': code})
+    return _controle(consultation)
+
+
 def workbook_for_case(consultation, snapshot):
     wb=load_workbook(ROOT/'static'/'modele_DPGF_SIE.xlsx')
     sh=wb['DPGF ST']
@@ -680,13 +761,23 @@ def export_case(consultation: str):
     lines=active.get('lines') or state.get('lines') or []
     checks=active.get('docs') or state.get('docs') or []
     missing=[d.get('name','') for d in checks if d.get('required')=='Obligatoire' and not (d.get('received') and d.get('validated'))]
+    try:
+        controle=_controle(consultation)
+    except Exception as exc:
+        controle={'verdict':'erreur','libelle':f'Contrôle impossible : {exc}','points':[]}
     archive=TEMP / (uuid.uuid4().hex+'.zip')
     with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=5) as z:
         header=f'SIE Tender Intelligence — dossier de travail {consultation}\n'
         header+=f'Exporté le {timestamp()} (UTC)\n\n'
         header+='CE DOSSIER N’EST PAS UNE OFFRE VÉRIFIÉE, SIGNÉE OU DÉPOSÉE.\nTous les éléments doivent être relus et validés par SIE.\n\n'
         header+=('Points de contrôle obligatoires non entièrement validés :\n'+'\n'.join('- '+v for v in missing)) if missing else 'Liste de complétude : contrôler tous les éléments avant tout dépôt.'
+        bloquants=[p for p in controle.get('points',[]) if p.get('niveau')=='bloquant']
+        header+='\n\nCONTRÔLE FINAL : '+controle.get('libelle','')+'\n'
+        header+=''.join(f"- [BLOQUANT] {p['titre']} : {p['detail']}\n" for p in bloquants)
+        header+=''.join(f"- [DÉROGATION] {p['titre']} : {p['derogation']['justification']} ({p['derogation'].get('auteur') or 'auteur non renseigné'})\n"
+                        for p in controle.get('points',[]) if p.get('derogation'))
         z.writestr('00_A_LIRE_AVANT_DEPOT.txt',header)
+        z.writestr('Suivi/controle_final.json',json.dumps(controle,ensure_ascii=False,indent=2))
         z.writestr('Suivi/fiche_renseignement.json',json.dumps(fic,ensure_ascii=False,indent=2))
         z.writestr('Suivi/controle_pieces.json',json.dumps(checks,ensure_ascii=False,indent=2))
         z.writestr('Suivi/alertes.json',json.dumps(active.get('alerts') or snapshot.get('sieAlerts',[]),ensure_ascii=False,indent=2))

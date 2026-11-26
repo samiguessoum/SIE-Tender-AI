@@ -29,7 +29,9 @@ import zipfile
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-MENTIONS = {'SO', 'S.O', 'S.O.', 'SANS OBJET', 'PM', 'P.M', 'P.M.', 'POUR MEMOIRE', 'POUR MÉMOIRE', 'INCLUS', 'NC'}
+# Unités qui ne se chiffrent pas : sans objet, pour mémoire, compris (« cis ») ou inclus dans un autre prix.
+MENTIONS = {'SO', 'S.O', 'S.O.', 'SANS OBJET', 'PM', 'P.M', 'P.M.', 'POUR MEMOIRE', 'POUR MÉMOIRE', 'INCLUS', 'NC',
+            'CIS', 'COMPRIS', 'CPS', 'INCL', 'INCLUS AILLEURS'}
 
 # --------------------------------------------------------------------------- outils
 
@@ -154,7 +156,7 @@ def lire(chemin: str | Path) -> dict:
         elif re.search(r'\btotal\b', des, re.I) and not unite:
             ligne['type'] = 'total'
         elif unite and _cle(unite).upper() in {_cle(m).upper() for m in MENTIONS}:
-            ligne['type'] = 'mention'     # SO (sans objet), PM (pour mémoire)...
+            ligne['type'] = 'mention'     # SO (sans objet), PM (pour mémoire), cis (compris)...
         elif unite:
             ligne['type'] = 'poste'
         elif num and des:

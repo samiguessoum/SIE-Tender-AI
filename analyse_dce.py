@@ -257,7 +257,7 @@ class Corpus:
             for i, page in enumerate(d['pages'], 1):
                 m = re.search(motif, page, flags)
                 if m:
-                    val = m.group(groupe) if groupe is not None else m.group(0)
+                    val = m.group(groupe) if groupe is not None and groupe <= len(m.groups()) else m.group(0)
                     val = val.strip() if isinstance(val, str) else val
                     return val, d['relpath'], i, extrait_autour(page, m.start(), m.end()), m
         return None
@@ -500,7 +500,7 @@ def analyser(documents: list[dict], cache_dir: Path | None = None, lots_retenus:
                     break
     visite.update(creneaux=creneaux, contacts=contacts, rendez_vous=rdv,
                   attestation=any(e['type'] == 'ATTESTATION_VISITE' for e in inventaire)
-                  or bool(corpus.chercher(r'attestation de visite', RC)))
+                  or bool(corpus.chercher(r'attestation de visite', RC, groupe=None)))
     fiche['visite'] = visite
     if visite['valeur'] == 'oui':
         alertes.append({'categorie': 'Administratif', 'priorite': 'haute', 'titre': 'Visite obligatoire',

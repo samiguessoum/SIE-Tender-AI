@@ -572,3 +572,49 @@ const sieDpgfAvantS2=dpgf;
 dpgf=function(){return sieDpgfAvantS2()+sieDpgfSection()};
 const sieSelectAvantS2=sieSelectCase;
 sieSelectCase=function(i){sieSelectAvantS2(i);delete sieDpgfA[sieCurrentId()]};
+
+// ============================================================================
+// Sprint S5 — Contrôle final : pièces exigées vs pièces déposées, visite, délai, alertes, DPGF, dérogations.
+// ============================================================================
+let sieControle={};
+async function sieControleCharger(){
+ const id=sieCurrentId();sieControle[id]={chargement:true};
+ try{sieControle[id]=await sieJson('/api/controle/'+encodeURIComponent(id))}catch(e){sieControle[id]={erreur:e.message}}
+ if(state.view==='final'&&sieCurrentId()===id)render();
+}
+async function sieDeroger(code,titre){
+ const justification=prompt('Dérogation pour « '+titre+' »\n\nJustification (obligatoire, tracée au journal et jointe au dossier) :');if(!justification)return;
+ const auteur=prompt('Nom et fonction de la personne qui autorise la dérogation :')||'';
+ try{sieControle[sieCurrentId()]=await sieJson('/api/controle/'+encodeURIComponent(sieCurrentId())+'/derogations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,justification,auteur})});render();toast('Dérogation enregistrée et tracée.')}
+ catch(e){alert(e.message)}
+}
+async function sieAnnulerDerogation(code){
+ if(!confirm('Annuler cette dérogation ? Le point redeviendra actif.'))return;
+ try{sieControle[sieCurrentId()]=await sieJson('/api/controle/'+encodeURIComponent(sieCurrentId())+'/derogations?code='+encodeURIComponent(code),{method:'DELETE'});render()}catch(e){alert(e.message)}
+}
+function sieControleSection(){
+ const id=sieCurrentId(),c=sieControle[id];
+ if(!c){sieControleCharger();}
+ const head=`<div class="card-head"><div><h3>Contrôle de conformité du dossier de réponse</h3><small>Pièces exigées par le RC (analyse du DCE) comparées aux pièces importées dans « Documents », visite, délai, alertes et DPGF des lots retenus.</small></div><button class="btn" onclick="sieControleCharger()">↻ Relancer le contrôle</button></div>`;
+ if(!c||c.chargement)return `<section class="card sectiongap">${head}<div class="card-body"><p class="small">Contrôle en cours…</p></div></section>`;
+ if(c.erreur)return `<section class="card sectiongap">${head}<div class="card-body"><p>${esc(c.erreur)}</p></div></section>`;
+ const couleur={pret:'green',a_verifier:'amber',bloque:'red',vide:'gray'}[c.verdict]||'gray';
+ const badge={bloquant:'red',majeur:'amber',info:'gray'};
+ const lignes=c.points.map(p=>`<tr${p.niveau==='bloquant'?' style="background:#fdf3f2"':''}><td>${p.statut==='ok'?'<span class="badge green">OK</span>':`<span class="badge ${badge[p.niveau]}">${p.niveau==='bloquant'?'Bloquant':p.niveau==='majeur'?'À vérifier':'Info'}</span>`}</td>
+  <td><b>${esc(p.titre)}</b><div class="small">${esc(p.detail||'')}</div>${p.preuves&&p.preuves.length?`<div class="small">↳ ${p.preuves.map(x=>esc(String(x).split('/').pop())).join(' · ')}</div>`:''}${p.derogation?`<div class="small" style="color:#956115">Dérogation : ${esc(p.derogation.justification)} — ${esc(p.derogation.auteur||'auteur non renseigné')} (${esc(String(p.derogation.created).slice(0,10))}) <a href="#" onclick="event.preventDefault();sieAnnulerDerogation('${esc(p.code)}')">annuler</a></div>`:''}</td>
+  <td>${p.source&&p.source.fichier?`<span class="sourcechip">${esc(String(p.source.fichier).split('/').pop())}${p.source.page?' · p. '+p.source.page:''}</span>`:''}</td>
+  <td>${p.statut!=='ok'&&!p.derogation&&p.niveau!=='info'?`<button class="btn sm" onclick="sieDeroger('${esc(p.code)}','${esc(p.titre).replace(/'/g,'’')}')">Déroger…</button>`:''}</td></tr>`).join('');
+ const k=c.compteurs;
+ return `<section class="card sectiongap">${head}<div class="card-body">
+  <div class="callout" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap"><span class="badge ${couleur}" style="font-size:12px;padding:7px 11px">${esc(c.libelle)}</span><span class="small">${k.bloquants} bloquant(s) · ${k.a_verifier} à vérifier · ${k.ok} conforme(s) · ${k.derogations} dérogation(s) · ${c.pieces_deposees} pièce(s) déposée(s) (${sieNiceSize(c.volume_octets)})${c.lots_retenus.length?' · lots retenus : '+esc(c.lots_retenus.join(', ')):''}</span></div>
+  <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>État</th><th>Point de contrôle</th><th>Source DCE</th><th></th></tr></thead><tbody>${lignes}</tbody></table></div>
+  <p class="small" style="margin-top:10px">${esc(c.avertissement)} Le rapport complet et les dérogations sont joints à l’archive ZIP (Suivi/controle_final.json).</p>
+ </div></section>`;
+}
+const sieFinalAvantS5=final;
+final=function(){
+ const html=sieFinalAvantS5();const k=html.indexOf('<h3>Export réel du dossier de travail');const at=k>0?html.lastIndexOf('<section',k):-1;
+ return at>0?html.slice(0,at)+sieControleSection()+html.slice(at):html+sieControleSection();
+};
+const sieSelectAvantS5=sieSelectCase;
+sieSelectCase=function(i){sieSelectAvantS5(i);delete sieControle[sieCurrentId()]};

@@ -161,3 +161,11 @@ def test_heures_insertion_independantes_de_l_ordre_de_lecture(tmp_path, texte):
                        'size': f.stat().st_size, 'sha256': None}])
     h = {x['element']: x['heures'] for x in res['fiche']['heures_insertion']['valeur']}
     assert h == {'Macro lot 1 (sous-lots 1 à 8)': 1000, 'Macro lot 2 (sous-lots 9 à 12)': 600, 'Lot 3': 180, 'Lot 4': 20}
+
+
+def test_visite_sans_formulaire_d_attestation_dans_le_dce(tmp_path):
+    # Régression : sans pièce « attestation de visite » dans le DCE, la recherche dans le RC ne doit pas planter
+    f = tmp_path / 'rc.txt'
+    f.write_text("Consultation n° X-1. Les candidats doivent obligatoirement effectuer une visite. Joindre l'attestation de visite.", 'utf-8')
+    res = A.analyser([{'id': '1', 'relpath': 'DCE/X-1 RC.txt', 'filename': 'X-1 RC.txt', 'storepath': str(f), 'size': 10, 'sha256': None}])
+    assert res['fiche']['visite']['valeur'] == 'oui' and res['fiche']['visite']['attestation'] is True
