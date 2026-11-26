@@ -618,3 +618,67 @@ final=function(){
 };
 const sieSelectAvantS5=sieSelectCase;
 sieSelectCase=function(i){sieSelectAvantS5(i);delete sieControle[sieCurrentId()]};
+
+// ============================================================================
+// Sprint S6 — Rédaction assistée par IA : brouillon par sous-critère, sources citées, garde-fous, insertion manuelle.
+// ============================================================================
+let sieIA={statut:null,brouillons:{},enCours:false};
+async function sieIAStatut(){try{sieIA.statut=await sieJson('/api/ia/statut')}catch(e){sieIA.statut={configure:false,aide:e.message}}if(state.view==='memoire')render()}
+function sieIACriteres(){
+ const an=(sieAnalyses[sieCurrentId()]||{}).analyse;const cr=an&&an.fiche.criteres&&an.fiche.criteres.valeur||[];
+ return cr.flatMap(c=>c.sous_criteres.length?c.sous_criteres.map(s=>({...s,parent:c.libelle,unite:c.unite})):(c.code==='3'||/prix/i.test(c.libelle)?[]:[{...c,parent:''}]));
+}
+function sieIASectionPourCritere(lib){
+ const t=(lib||'').toLowerCase();
+ if(/déchet|dechet|nuisance|environnement|emprunte|empreinte/.test(t))return 'securite';
+ if(/délai|delai|planning/.test(t))return 'planning';
+ if(/produit|matériau|materiau|équipement|equipement|fourniture/.test(t))return 'fournitures';
+ if(/coordination|interface|exploitation|gpa/.test(t))return 'interfaces';
+ if(/méthodologie|methodologie|organisation/.test(t))return 'methodologie';
+ return 'methodologie';
+}
+function sieIALot(){const l=sieMemoCurrent().lot;const m=String(l&&l.numero||'').match(/(\d+)/);return /macro/i.test(l&&l.numero||'')&&m?'ML'+m[1]:(m?m[1]:'')}
+async function sieIARediger(){
+ const code=document.getElementById('sie-ia-critere')?.value,consignes=document.getElementById('sie-ia-consignes')?.value||'',longueur=Number(document.getElementById('sie-ia-longueur')?.value||450);
+ if(!code){alert('Choisissez un sous-critère.');return}
+ sieIA.enCours=true;render();
+ try{const r=await sieJson('/api/ia/'+encodeURIComponent(sieCurrentId())+'/rediger',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({critere:code,consignes,lot:sieIALot(),longueur})});
+  sieIA.brouillons[sieCurrentId()]=r;toast('Brouillon proposé : à relire avant insertion.')}
+ catch(e){alert('Rédaction impossible : '+e.message)}
+ finally{sieIA.enCours=false;render()}
+}
+function sieIAInserer(){
+ const r=sieIA.brouillons[sieCurrentId()];if(!r)return;
+ const cfg=sieMemoConfig();if(!cfg.mode){alert('Choisissez d’abord le type de mémoire (commun ou par lot).');return}
+ const section=document.getElementById('sie-ia-section')?.value||'methodologie';
+ const {lot}=sieMemoCurrent(),memo=sieMemoGet(lot);
+ const legende=r.sources.map(s=>`[${s.id}] ${s.origine==='dce'?'DCE':'Archive SIE'} — ${String(s.fichier).split('/').pop()}${s.page?' p. '+s.page:''}`).join('\n');
+ memo.sections[section]=(memo.sections[section]?memo.sections[section]+'\n\n':'')+`[BROUILLON IA À RELIRE — ${r.critere.code} ${r.critere.libelle} — ${r.modele} — ${new Date().toLocaleDateString('fr-FR')}]\n`+r.texte+'\n\nSources :\n'+legende;
+ sieQueueSave();render();toast('Brouillon inséré dans « '+section+' ». Supprimez les repères de sources [S…] après vérification.');
+}
+function sieIAPanel(){
+ if(!sieIA.statut){sieIAStatut();return ''}
+ const st=sieIA.statut,r=sieIA.brouillons[sieCurrentId()],crit=sieIACriteres();
+ if(!(sieAnalyses[sieCurrentId()]||{}).analyse&&!(sieAnalyses[sieCurrentId()]||{}).chargement){sieAnalyses[sieCurrentId()]={chargement:true};sieLoadAnalyse(sieCurrentId()).then(()=>{if(state.view==='memoire')render()})}
+ const etat=st.configure?`<span class="badge green">IA active : ${esc(st.modele)}</span>`:`<span class="badge amber">IA non configurée</span>`;
+ const ctrl=r&&r.controle;
+ const alertes=ctrl?[ctrl.sources_inconnues.length?`<div class="err">Sources citées inexistantes : ${esc(ctrl.sources_inconnues.join(', '))}</div>`:'',
+  ctrl.chiffres_non_sources.length?`<div class="err"><b>${ctrl.chiffres_non_sources.length} chiffre(s) absent(s) des sources</b> — à vérifier ou supprimer :<br>${ctrl.chiffres_non_sources.map(c=>'• <b>'+esc(c.valeur)+'</b> : …'+esc(c.contexte)+'…').join('<br>')}</div>`:'',
+  ctrl.paragraphes_sans_source.length?`<div class="err">${ctrl.paragraphes_sans_source.length} paragraphe(s) sans source citée.</div>`:'',
+  ctrl.a_completer?`<div class="err good">${ctrl.a_completer} élément(s) « À COMPLÉTER » laissé(s) par l’IA faute d’information sourcée : à renseigner par SIE.</div>`:''].join(''):'';
+ const sections=sieMemoSections.map(([k,l])=>`<option value="${k}"${r&&sieIASectionPourCritere(r.critere.libelle)===k?' selected':''}>${esc(l)}</option>`).join('');
+ return `<section class="card sectiongap"><div class="card-head"><div><h3>Rédaction assistée par IA</h3><small>Brouillon par sous-critère du cadre de réponse, fondé sur les pièces du DCE et les anciens mémoires SIE (recherche locale). Chaque phrase cite sa source ; rien n’est inséré sans votre action.</small></div>${etat}</div><div class="card-body">
+  ${st.configure?'':`<div class="callout"><b>Pour activer l’IA :</b> ${esc(st.aide||'')} La clé n’est jamais affichée ni enregistrée dans la base.</div>`}
+  <p class="small">Anciens mémoires indexés : <b>${st.archives_memoire}</b>${st.archives_memoire?'':' — importez des mémoires validés (Documents, catégorie « Mémoire technique ») pour que l’IA reprenne le savoir-faire de SIE.'} · Envoyés à l’API : le libellé du sous-critère, vos consignes et une dizaine d’extraits courts. Jamais de prix, DPGF, devis ni pièces de candidature.</p>
+  <div class="grid two" style="margin-top:10px"><label>Sous-critère<select id="sie-ia-critere" class="field" style="width:100%">${crit.length?crit.map(c=>`<option value="${esc(c.code)}">${esc(c.code)} — ${esc(c.libelle)} (${c.poids} ${esc(c.unite||'')})</option>`).join(''):'<option value="">Lancez d’abord l’analyse du DCE</option>'}</select></label>
+  <label>Longueur visée<select id="sie-ia-longueur" class="field" style="width:100%"><option value="300">Courte (~300 mots)</option><option value="450" selected>Moyenne (~450 mots)</option><option value="800">Longue (~800 mots)</option></select></label></div>
+  <label style="display:block;margin-top:10px">Consignes et éléments propres à SIE (facultatif)<textarea id="sie-ia-consignes" class="field" style="width:100%;min-height:70px" placeholder="Ex. : chef de chantier dédié à temps plein ; intervention de nuit dans les laboratoires ; insister sur le site occupé…"></textarea></label>
+  <div class="two-btns" style="margin-top:10px"><button class="btn primary" ${st.configure&&crit.length&&!sieIA.enCours?'':'disabled'} onclick="sieIARediger()">${sieIA.enCours?'Rédaction en cours…':'✦ Proposer un brouillon'}</button></div>
+  ${r?`<div style="margin-top:16px"><h4 class="dochead">Brouillon — ${esc(r.critere.code)} ${esc(r.critere.libelle)} <small>(${esc(r.modele)}${r.usage&&r.usage.total_tokens?', '+r.usage.total_tokens+' tokens':''})</small></h4>${alertes}
+   <div class="previewfile" style="line-height:1.6;font-family:inherit;font-size:13px">${esc(r.texte).replace(/\[(S\d+)\]/g,'<span class="sourcechip">$1</span>').replace(/\[À COMPLÉTER[^\]]*\]/g,m=>'<mark>'+m+'</mark>')}</div>
+   <details style="margin-top:8px"><summary class="strong">Sources utilisées (${r.sources.length})</summary>${r.sources.map(s=>`<div style="padding:6px 0;border-bottom:1px solid #eef1f4"><span class="sourcechip">${s.id}</span> <span class="badge ${s.origine==='dce'?'blue':'green'}">${s.origine==='dce'?'DCE':'Archive SIE'}</span> ${esc(String(s.fichier).split('/').pop())}${s.page?' · p. '+s.page:''}<div class="small">${esc(s.extrait)}…</div></div>`).join('')}</details>
+   <div class="grid two" style="margin-top:10px;align-items:end"><label>Insérer dans la section<select id="sie-ia-section" class="field" style="width:100%">${sections}</select></label><div class="two-btns"><button class="btn primary" onclick="sieIAInserer()">↳ Insérer dans le mémoire</button><button class="btn" onclick="sieIARediger()">↻ Autre proposition</button></div></div></div>`:''}
+ </div></section>`;
+}
+const sieMemoireAvantS6=memoire;
+memoire=function(){return sieMemoireAvantS6()+sieIAPanel()};

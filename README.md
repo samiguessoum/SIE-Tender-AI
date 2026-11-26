@@ -102,3 +102,24 @@ Les tests utilisent un répertoire temporaire, sans modifier les données métie
 ---
 
 Projet Commande Entreprise 77 | IMT Atlantique • SIE | Développement pédagogique, novembre 2026.
+
+## Rédaction assistée par IA (mémoire technique)
+
+SIE a autorisé l'usage d'une API externe **pour les écrits uniquement**. Le module `redaction_ia.py` :
+
+- indexe **localement** (BM25, sans service externe) les pièces écrites du DCE et les anciens mémoires SIE importés en catégorie « Mémoire technique » ;
+- n'envoie à l'API que le libellé du sous-critère, les consignes saisies et une dizaine d'extraits courts — **jamais** de prix, DPGF, devis, bilans ni pièces de candidature ;
+- impose la citation des sources `[S1]…` et l'écriture `[À COMPLÉTER : …]` quand une information manque ;
+- signale automatiquement les sources inventées, les paragraphes non sourcés et les chiffres absents des sources ;
+- n'insère rien dans le mémoire sans action de l'utilisateur ; le journal ne conserve que des métadonnées.
+
+Configuration (la clé n'est jamais versionnée ni stockée en base) : créer `~/SIE_data/ia.env`
+
+```
+OPENAI_API_KEY=sk-...
+# facultatif
+OPENAI_MODEL=gpt-6.1-terra
+OPENAI_BASE_URL=https://eu.api.openai.com/v1
+```
+
+puis relancer `LANCER_MAC.command`. Sans clé, l'outil fonctionne normalement, sans la rédaction IA.

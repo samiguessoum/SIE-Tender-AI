@@ -180,3 +180,26 @@ def test_controle_final_et_derogation(client):
         assert 'DÉROGATION' in z.read('00_A_LIRE_AVANT_DEPOT.txt').decode('utf-8')
     assert client.delete('/api/controle/AO7/derogations',params={'code':visite['code']}).status_code==200
     assert 'controle_derogation' in [j['action'] for j in client.get('/api/journal/AO7').json()['journal']]
+
+
+def test_redaction_ia_simulee(client, monkeypatch):
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    monkeypatch.delenv('SIE_IA_FOURNISSEUR', raising=False)
+    assert client.get('/api/ia/statut').json()['configure'] is False
+    assert client.post('/api/ia/AO7/rediger', json={'critere': '1.1', 'libelle': 'x'}).status_code == 503
+    monkeypatch.setenv('SIE_IA_FOURNISSEUR', 'simule')
+    cctp = 'CCTP Lot 3 Electricite. Gestion des dechets de chantier : tri selectif et bordereaux de suivi. Site occupe.\n'.encode()
+    assert client.post('/api/files/AO7/upload', files={'file': ('CCTP_Lot3.txt', cctp, 'text/plain')},
+                       data={'category': 'dce', 'relpath': 'DCE/CCTP_Lot3.txt'}).status_code == 200
+    memo = 'Memoire technique SIE. Nos equipes trient les dechets dans des bennes dediees et tiennent un registre.\n'.encode()
+    assert client.post('/api/files/AO6/upload', files={'file': ('Memoire_2024.txt', memo, 'text/plain')},
+                       data={'category': 'memoire', 'relpath': 'Memoire_2024.txt'}).status_code == 200
+    st = client.get('/api/ia/statut').json()
+    assert st['configure'] and st['fournisseur'] == 'simule' and st['archives_memoire'] >= 1 and 'sk-' not in str(st)
+    r = client.post('/api/ia/AO7/rediger', json={'critere': '2.3', 'libelle': 'Gestion des déchets', 'lot': '3'})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert {s['origine'] for s in body['sources']} == {'dce', 'archive'}
+    assert client.get('/api/ia/AO7/redactions').json()['redactions'][0]['critere']['code'] == '2.3'
+    journal = client.get('/api/journal/AO7').json()
+    assert 'Gestion des dechets de chantier' not in str(journal)   # le journal ne garde pas le texte

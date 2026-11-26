@@ -32,9 +32,17 @@ if [ ! -f "$DATA_DIR/sie.db" ] && [ -f data/sie.db ]; then
   echo "Données déplacées."
 fi
 export SIE_DATA_DIR="$DATA_DIR"
+# Rédaction IA : la clé OpenAI est lue dans $DATA_DIR/ia.env (hors du projet, jamais versionnée).
+if [ -f "$DATA_DIR/ia.env" ]; then
+  chmod 600 "$DATA_DIR/ia.env" 2>/dev/null
+  set -a; . "$DATA_DIR/ia.env"; set +a
+  echo "Rédaction IA : configurée (modèle ${OPENAI_MODEL:-par défaut})"
+else
+  echo "Rédaction IA : non configurée (créer $DATA_DIR/ia.env avec OPENAI_API_KEY=...)"
+fi
 echo "Données : $SIE_DATA_DIR"
 echo "Tests automatiques..."
-PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests -q -p no:cacheprovider 2>&1 | tee data/.derniers_tests.txt
+OPENAI_API_KEY= SIE_IA_FOURNISSEUR= PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests -q -p no:cacheprovider 2>&1 | tee data/.derniers_tests.txt
 echo
 echo "Démarrage du serveur : http://127.0.0.1:8000  (fermer cette fenêtre pour arrêter)"
 PYTHONDONTWRITEBYTECODE=1 "$PY" server.py

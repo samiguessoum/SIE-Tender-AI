@@ -30,6 +30,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 import analyse_dce
 import dpgf_acheteur
 import controle_final
+import redaction_ia
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get('SIE_DATA_DIR', ROOT / 'data')).resolve()
@@ -80,6 +81,10 @@ def setup():
         # Dérogations formalisées du contrôle final (un point levé = une justification et un auteur)
         cx.execute('CREATE TABLE IF NOT EXISTS controle_derogations (consultation TEXT NOT NULL, code TEXT NOT NULL, '
                    'justification TEXT NOT NULL, auteur TEXT NOT NULL DEFAULT \'\', created TEXT NOT NULL, PRIMARY KEY (consultation, code))')
+        # Brouillons produits par l'IA (historique ; le mémoire n'est modifié que sur action de l'utilisateur)
+        cx.execute('CREATE TABLE IF NOT EXISTS ia_redactions (id INTEGER PRIMARY KEY AUTOINCREMENT, consultation TEXT NOT NULL, '
+                   'critere TEXT NOT NULL, lot TEXT NOT NULL DEFAULT \'\', texte TEXT NOT NULL, resultat TEXT NOT NULL, '
+                   'modele TEXT NOT NULL, created TEXT NOT NULL)')
         # Les chemins des fichiers sont absolus : si le dossier de données a été déplacé (ex. hors d'iCloud),
         # on les recalcule à partir de l'emplacement actuel, sans rien perdre.
         for row in cx.execute('SELECT id, consultation, storepath FROM documents').fetchall():
@@ -700,6 +705,84 @@ def controle_annuler_derogation(consultation: str, code: str):
         raise HTTPException(404, 'Dérogation introuvable')
     journaliser(consultation, 'controle_derogation_annulee', {'code': code})
     return _controle(consultation)
+
+
+
+# ---------------------------------------------------------------------------- Rédaction assistée par IA (sprint S6)
+def _ia():
+    return redaction_ia.fournisseur_depuis_environnement()
+
+
+@app.get('/api/ia/statut')
+def ia_statut():
+    # Ne renvoie jamais la clé : seulement si elle est configurée, le fournisseur et le modèle.
+    f = _ia()
+    with db() as cx:
+        archives = cx.execute("SELECT COUNT(*) FROM documents WHERE category='memoire'").fetchone()[0]
+    return {'configure': f is not None, 'fournisseur': f.nom if f else None, 'modele': f.modele if f else None,
+            'point_acces': getattr(f, 'base_url', None) if f else None, 'archives_memoire': archives,
+            'aide': None if f else "Créer le fichier ~/SIE_data/ia.env avec la ligne OPENAI_API_KEY=… puis relancer le serveur."}
+
+
+@app.post('/api/ia/{consultation}/rediger')
+async def ia_rediger(consultation: str, request: Request):
+    safe_id(consultation)
+    fournisseur = _ia()
+    if fournisseur is None:
+        raise HTTPException(503, "IA non configurée : ajouter OPENAI_API_KEY dans ~/SIE_data/ia.env puis relancer.")
+    try:
+        body = await request.json()
+        code = str(body.get('critere', '')).strip()
+        consignes = str(body.get('consignes', '')).strip()[:2000]
+        lot = (str(body.get('lot')).strip() or None) if body.get('lot') else None
+        longueur = max(150, min(int(body.get('longueur', 450)), 1500))
+    except Exception:
+        raise HTTPException(400, 'Format attendu : {"critere": "1.1", "consignes": "...", "lot": "3"}')
+    with db() as cx:
+        an = cx.execute('SELECT resultat FROM analyses WHERE consultation=? ORDER BY id DESC LIMIT 1', (consultation,)).fetchone()
+        dce = [dict(r) for r in cx.execute("SELECT * FROM documents WHERE consultation=? AND category='dce'", (consultation,)).fetchall()]
+        archives = [dict(r) for r in cx.execute("SELECT * FROM documents WHERE category='memoire' AND consultation<>?", (consultation,)).fetchall()]
+    criteres = (json.loads(an['resultat'])['fiche'].get('criteres') or {}).get('valeur', []) if an else []
+    critere = None
+    for c in criteres:
+        if c['code'] == code:
+            critere = {'code': c['code'], 'libelle': c['libelle'], 'poids': c['poids'], 'unite': c.get('unite')}
+        for sc in c.get('sous_criteres', []):
+            if sc['code'] == code:
+                critere = {'code': sc['code'], 'libelle': sc['libelle'], 'poids': sc['poids'], 'unite': c.get('unite')}
+    if critere is None:
+        if not body.get('libelle'):
+            raise HTTPException(400, "Critère inconnu : lancer l'analyse du DCE ou fournir un « libelle ».")
+        critere = {'code': code, 'libelle': str(body['libelle'])[:500]}
+    index, stats = redaction_ia.preparer_extraits(dce, archives, DATA / 'texte', lot)
+    try:
+        resultat = await asyncio.to_thread(redaction_ia.rediger, fournisseur, index, critere, consignes, lot, longueur=longueur)
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"Appel à l'IA impossible : {exc}")
+    resultat['index'] = stats
+    ts = timestamp()
+    with LOCK, db() as cx:
+        cur = cx.execute('INSERT INTO ia_redactions(consultation,critere,lot,texte,resultat,modele,created) VALUES (?,?,?,?,?,?,?)',
+                         (consultation, critere['code'], lot or '', resultat['texte'], json.dumps(resultat, ensure_ascii=False),
+                          resultat['modele'], ts))
+        resultat['id'] = cur.lastrowid
+    # Journal : métadonnées seulement (jamais le texte envoyé ou reçu)
+    journaliser(consultation, 'ia_redaction', {'critere': critere['code'], 'lot': lot, 'modele': resultat['modele'],
+                                               'fournisseur': resultat['fournisseur'], 'sources': len(resultat['sources']),
+                                               'caracteres_envoyes': resultat['caracteres_envoyes'], 'usage': resultat['usage'],
+                                               'chiffres_non_sources': len(resultat['controle']['chiffres_non_sources'])})
+    return resultat
+
+
+@app.get('/api/ia/{consultation}/redactions')
+def ia_redactions(consultation: str, critere: str = ''):
+    safe_id(consultation)
+    with db() as cx:
+        rows = cx.execute('SELECT id,critere,lot,modele,created,resultat FROM ia_redactions WHERE consultation=? AND (?=\'\' OR critere=?) '
+                          'ORDER BY id DESC LIMIT 30', (consultation, critere, critere)).fetchall()
+    return {'redactions': [{**json.loads(r['resultat']), 'id': r['id'], 'created': r['created']} for r in rows]}
 
 
 def workbook_for_case(consultation, snapshot):
