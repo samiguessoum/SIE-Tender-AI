@@ -1,0 +1,331 @@
+{
+  "_description": "Vérité terrain de la consultation MX25-132 (Ecole polytechnique, aile 3), établie à la main depuis le DCE public. Sert de référence pour tester la fiche (F1), l'analyse (F2), le mémoire (F6) et le contrôle final (F7). Ne contient aucune donnée de SIE.",
+  "dossier_source": "exemples/DCE_POLYTECHNIQUE_TEST/V1 - MX25-132 DCE",
+  "fiche": {
+    "reference": {
+      "valeur": "MX25-132",
+      "source": "MX25-132 RC.pdf",
+      "page": 1
+    },
+    "objet": {
+      "valeur": "Rénovation de l'aile 3 du centre de recherche de l'Ecole polytechnique",
+      "source": "MX25-132 RC.pdf",
+      "page": 1
+    },
+    "acheteur": {
+      "valeur": "Ecole polytechnique - Direction des Achats, Route de Saclay, 91128 Palaiseau",
+      "source": "MX25-132 RC.pdf",
+      "page": 2
+    },
+    "contact_acheteur": {
+      "valeur": "Mélanie Aubry - Acheteur Négociateur, 01 69 33 32 30",
+      "source": "MX25-132 RC.pdf",
+      "page": 2
+    },
+    "procedure": {
+      "valeur": "Appel d'offres ouvert (art. R2124-2 1° CCP)",
+      "source": "MX25-132 RC.pdf",
+      "page": 1
+    },
+    "date_limite_remise": {
+      "valeur": "2026-10-12T15:00",
+      "source": "Questions-réponses 06.10.2026.pdf",
+      "question": 61,
+      "historique": [
+        {
+          "valeur": "2026-10-05T15:00",
+          "source": "MX25-132 RC.pdf",
+          "page": 1,
+          "statut": "remplacée"
+        }
+      ],
+      "note": "La date du RC est fausse après prolongation : l'outil doit faire primer les questions-réponses."
+    },
+    "date_limite_questions": {
+      "valeur": "12 jours avant la date limite de remise",
+      "source": "MX25-132 RC.pdf",
+      "page": 11
+    },
+    "validite_offres_jours": {
+      "valeur": 180,
+      "source": "MX25-132 RC.pdf",
+      "page": 5
+    },
+    "delai_execution": {
+      "valeur": "18 mois",
+      "source": "MX25-132 RC.pdf",
+      "page": 2
+    },
+    "forme_prix": {
+      "valeur": "Prix forfaitaires révisables",
+      "source": "MX25-132 RC.pdf",
+      "page": 2
+    },
+    "variantes": {
+      "valeur": "Non autorisées",
+      "source": "MX25-132 RC.pdf",
+      "page": 5,
+      "vigilance": "Les Q/R n°6 et 14 évoquent des variantes possibles sous conditions : contradiction à signaler."
+    },
+    "intervenants": {
+      "moa": "Ecole polytechnique",
+      "moe": "ALTEREA (mandataire) avec CODA Architectes (co-traitant)",
+      "conducteur_operation": "ALTEREA",
+      "sps": "BTP Consultants",
+      "controleur_technique": "SOCOTEC",
+      "opc": "EGIS",
+      "ssi": "À vérifier",
+      "source": "MX25-132 RC.pdf",
+      "page": 4
+    },
+    "visite": {
+      "obligatoire": true,
+      "source": "MX25-132 RC.pdf",
+      "page": 5,
+      "creneaux": [
+        "2026-09-03 10:00-12:00",
+        "2026-09-08 10:00-12:00",
+        "2026-09-10 10:00-12:00",
+        "2026-09-15 10:00-12:00"
+      ],
+      "prise_rdv": "au plus tard 24 h avant",
+      "contacts": [
+        "Said Moussa Benyacine",
+        "Djamal Kettou"
+      ],
+      "piece": "MX25-132 Attestation de visite du site.docx (à apporter préremplie, signée par l'acheteur)"
+    }
+  },
+  "lots": [
+    {
+      "numero": "ML1",
+      "intitule": "Macro-lot 1 - Clos couvert et second oeuvre",
+      "sous_lots": [
+        "1.1 Gros-oeuvre, désamiantage, curage, démolition",
+        "1.2 Etanchéité",
+        "1.3 Menuiseries extérieures",
+        "1.4 Menuiseries intérieures",
+        "1.5 Métallerie, serrurerie",
+        "1.6 Cloisons, doublages, faux plafonds",
+        "1.7 Revêtements de sols et murs",
+        "1.8 Peinture"
+      ]
+    },
+    {
+      "numero": "ML2",
+      "intitule": "Macro-lot 2 - Fluides et laboratoires",
+      "sous_lots": [
+        "2.1 CVC",
+        "2.2 Plomberie et sanitaires",
+        "2.3 Equipements de laboratoire",
+        "2.4 Gaz spéciaux"
+      ]
+    },
+    {
+      "numero": "3",
+      "intitule": "Electricité CFO, CFA, SSI",
+      "sous_lots": [],
+      "lot_sie": true
+    },
+    {
+      "numero": "4",
+      "intitule": "Ascenseur",
+      "sous_lots": []
+    }
+  ],
+  "regles_lots": "Offre possible par macro-lot ou lot ; une offre sur un sous-lot seul est irrégulière (RC p.3).",
+  "criteres": {
+    "source": "MX25-132 RC.pdf",
+    "page": 9,
+    "technique": {
+      "poids": 50,
+      "sous_criteres": {
+        "1.1 Méthodologie, compréhension, organisation des études et de l'exécution": 15,
+        "1.2 Respect du délai et justification (planning détaillé du lot exigé)": 15,
+        "1.3 Pertinence des produits, matériaux et équipements": 10,
+        "1.4 Coordination MOA, mise en exploitation, GPA": 10
+      }
+    },
+    "environnement": {
+      "poids": 10,
+      "sous_criteres": {
+        "2.1 Limitation des nuisances": 3,
+        "2.2 Gestion des déchets": 3,
+        "2.3 Réduction de l'empreinte environnementale": 2,
+        "2.4 Suivi des engagements environnementaux": 2
+      }
+    },
+    "prix": {
+      "poids": 40,
+      "methode": "Note = prix le plus bas / prix de l'offre x barème ; base = montant total de l'AE"
+    }
+  },
+  "trame_memoire": {
+    "source": "MX25-132_Cadre de reponse technique.docx",
+    "obligatoire": true,
+    "regle": "Le cadre de réponse est la proposition technique, sous peine de rejet. Renvois vers annexes uniquement avec document + page précis.",
+    "sections": [
+      "Identification du candidat",
+      "1.1",
+      "1.2",
+      "1.3",
+      "1.4",
+      "2.1",
+      "2.2",
+      "2.3",
+      "2.4",
+      "3 Prix (montant AE)",
+      "Liste des annexes avec correspondance sous-critère/page"
+    ]
+  },
+  "pieces_exigees": {
+    "candidature": [
+      {
+        "piece": "DC1 (ou DUME)",
+        "obligatoire": true
+      },
+      {
+        "piece": "DC2 (ou DUME)",
+        "obligatoire": true
+      },
+      {
+        "piece": "Chiffre d'affaires des 3 derniers exercices",
+        "obligatoire": true
+      },
+      {
+        "piece": "Annexe 3 au RC (effectifs, matériel, références 3 ans avec attestations)",
+        "obligatoire": true
+      },
+      {
+        "piece": "Certificats de qualifications professionnelles",
+        "obligatoire": true
+      },
+      {
+        "piece": "Qualification amiante (sous-section 3 ou 4) pour le lot 3",
+        "obligatoire": true,
+        "source": "Q/R n°18"
+      },
+      {
+        "piece": "Certificats de qualité",
+        "obligatoire": false
+      },
+      {
+        "piece": "Pour chaque sous-traitant : capacités + déclaration de non-interdiction",
+        "obligatoire": "si sous-traitance"
+      }
+    ],
+    "offre": [
+      {
+        "piece": "Attestation de visite signée",
+        "obligatoire": true,
+        "eliminatoire": true
+      },
+      {
+        "piece": "Cadre de réponse technique complété",
+        "obligatoire": true,
+        "eliminatoire": true
+      },
+      {
+        "piece": "DPGF du lot",
+        "obligatoire": true
+      },
+      {
+        "piece": "Acte d'engagement du lot (montant total = base de notation du prix)",
+        "obligatoire": true
+      },
+      {
+        "piece": "Planning d'exécution détaillé du lot (interfaces, moyens)",
+        "obligatoire": true
+      },
+      {
+        "piece": "Mémoire technique",
+        "obligatoire": false
+      }
+    ],
+    "attributaire": [
+      "Attestations d'assurance",
+      "Régularité fiscale (DGFIP)",
+      "Régularité sociale (URSSAF)",
+      "RIB/IBAN",
+      "Liste nominative des salariés étrangers (ou déclaration sur l'honneur)",
+      "SIREN",
+      "Jugements de redressement le cas échéant"
+    ]
+  },
+  "regles_remise": [
+    "Dépôt électronique sur marches-publics.gouv.fr avant la date et l'heure limites (offre hors délai = rejet sans classement).",
+    "Propositions en français et en euros ; signature non requise au dépôt, AE signé électroniquement par l'attributaire (certificat eIDAS).",
+    "Planning : toute divergence avec le planning de référence doit être justifiée, sinon offre irrégulière."
+  ],
+  "vigilances_lot3_issues_QR": [
+    {
+      "q": 18,
+      "sujet": "Qualification amiante exigée pour le lot 3"
+    },
+    {
+      "q": 25,
+      "sujet": "Détecteurs incendie : généraliser l'optique adressable"
+    },
+    {
+      "q": 26,
+      "sujet": "Classement ERT maintenu (pas ERP) pour SSI et éclairage de sécurité"
+    },
+    {
+      "q": 28,
+      "sujet": "Interface paillasses labo (ML2.3) : RJ45 fournies, posées, câblées par le lot 3",
+      "interface": "2.3"
+    },
+    {
+      "q": 29,
+      "sujet": "Alimentation des centrales de détection gaz/anoxie à la charge du lot 3",
+      "interface": "2.4"
+    },
+    {
+      "q": 30,
+      "sujet": "Zone ATEX limitée aux deux armoires de stockage gaz (à confirmer par MOA)",
+      "interface": "2.4"
+    },
+    {
+      "q": 31,
+      "sujet": "Liste des points GTB à la charge du lot 3",
+      "interface": "2.1"
+    },
+    {
+      "q": 32,
+      "sujet": "Sous-comptages des ventilateurs au lot CVC, compteurs communicants dans armoires électriques",
+      "interface": "2.1"
+    },
+    {
+      "q": 33,
+      "sujet": "Attente monte-charge Schindler 2000 kg 1 m/s",
+      "interface": "4"
+    },
+    {
+      "q": 34,
+      "sujet": "Ligne téléphonique de secours ascenseur à prévoir au lot 3",
+      "interface": "4"
+    },
+    {
+      "q": 35,
+      "sujet": "Alimentation provisoire de chantier : un des 3 départs 250 A maintenu",
+      "interface": "1.1"
+    },
+    {
+      "q": 36,
+      "sujet": "Lot électricité sous-sol : 65 jours, 4 mois après début phase sous-sol"
+    },
+    {
+      "q": 52,
+      "sujet": "Ligne compte prorata autorisée dans la DPGF avant total TTC"
+    }
+  ],
+  "pieges_pour_l_outil": [
+    "Date limite modifiée par les Q/R (05/10 -> 12/10).",
+    "Pièces ajoutées au DCE le 03/09/2026 (diagnostics, RICT, PGC) : le DCE a plusieurs versions.",
+    "Q/R publiées en cumulatif (le PDF du 06/10 reprend les précédentes) : dédoublonner par numéro.",
+    "Fichier vide : PG Techniques/MACRO LOT 2/MACRO LOT 2.4 - Gaz spéciaux/5403 - PLAN R+2 GAZ.pdf (0 octet).",
+    "Dossiers et zips en double (PG Techniques/PG Techniques, *.zip déjà décompressés).",
+    "La DPGF remise est celle de l'acheteur (.xlsm), pas le modèle interne SIE.",
+    "Coordinateur SSI non nommé dans le RC : doit rester « À vérifier »."
+  ]
+}
