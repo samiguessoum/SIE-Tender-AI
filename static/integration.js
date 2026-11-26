@@ -388,3 +388,97 @@ final=function(){let html=sieFinalActual(),c=dceCase();if(!/^DEMO-/.test(c.id)){
  }
  return html;
 };
+
+// ============================================================================
+// Sprint S1 — Analyse structurée du DCE : champs sourcés, alertes suivies, pré-remplissage de la fiche.
+// ============================================================================
+let sieAnalyses={};
+const SIE_CHAMPS=[['reference','Référence'],['objet','Objet'],['procedure','Procédure'],['date_limite','Date limite de remise'],
+ ['date_limite_questions','Date limite des questions'],['visite','Visite du site'],['validite_offres','Validité des offres'],
+ ['delai_execution','Délai d’exécution'],['forme_prix','Forme des prix'],['variantes','Variantes'],['acheteur','Acheteur'],
+ ['contact','Contact acheteur'],['lieu','Lieu d’exécution'],['moa','Maître d’ouvrage'],['moe','Maître d’œuvre'],['architecte','Architecte'],
+ ['sps','Coordonnateur SPS'],['ssi','Coordinateur SSI'],['controleur_technique','Contrôleur technique'],['opc','OPC'],['trame_memoire','Trame du mémoire']];
+const SIE_STATUTS=['À vérifier','En cours','Traité','Bloquant','Sans objet'];
+async function sieLoadAnalyse(id){
+ try{const r=await sieJson('/api/analyse/'+encodeURIComponent(id));sieAnalyses[id]=r}
+ catch(e){sieAnalyses[id]={erreur:e.message}}
+}
+function sieSrc(c){
+ if(!c||!c.source)return '<span class="badge amber">À vérifier</span>';
+ return `<span class="sourcechip" title="${esc(c.extrait||'')}">${esc(String(c.source).split('/').pop())}${c.page?' · p. '+c.page:''}</span>`;
+}
+function sieAnalysePanel(){
+ const id=sieCurrentId(),a=sieAnalyses[id];
+ const head=(btn)=>`<div class="card-head"><div><h3>Synthèse automatique du DCE</h3><small>Pièces classées par type et lues par priorité : questions-réponses, RC, CCAP, cadre de réponse, CCTP. Chaque valeur indique sa source.</small></div>${btn}</div>`;
+ if(!a||a.chargement)return `<section class="card sectiongap">${head('')}<div class="card-body"><p class="small">Chargement de la dernière analyse…</p></div></section>`;
+ if(!a.analyse)return `<section class="card sectiongap">${head('<button class="btn primary" onclick="sieScanDce()">⌕ Analyser le DCE</button>')}<div class="card-body"><p>Aucune analyse pour cette consultation. Importez le DCE puis lancez l’analyse.</p>${a.erreur?`<p class="small">${esc(a.erreur)}</p>`:''}</div></section>`;
+ const an=a.analyse,f=an.fiche,s=an.synthese;
+ const lignes=SIE_CHAMPS.map(([k,l])=>{const c=f[k]||{};let v=c.valeur;
+  if(k==='visite'&&c.statut==='extrait')v=(v==='oui'?'Obligatoire':'Non obligatoire')+(c.creneaux&&c.creneaux.length?' — '+c.creneaux.join(' ; '):'')+(c.rendez_vous?' — '+c.rendez_vous:'')+(c.contacts&&c.contacts.length?' — '+c.contacts.join(', '):'');
+  const hist=c.historique&&c.historique.length?`<div class="small">Remplace : ${c.historique.map(x=>esc(x.valeur)+' ('+esc(String(x.source).split('/').pop())+')').join(', ')}</div>`:'';
+  return `<tr><td class="strong" style="white-space:nowrap">${l}</td><td>${c.statut==='extrait'?esc(v):'<span class="badge amber">À vérifier</span>'}${hist}</td><td>${sieSrc(c)}</td></tr>`}).join('');
+ const lots=(f.lots&&f.lots.valeur||[]).map(l=>`<tr><td class="strong">${esc(l.numero)}</td><td>${l.sous_lots&&l.sous_lots.length?l.sous_lots.map(x=>esc(x.numero+' '+x.intitule)).join('<br>'):esc(l.intitule)}</td></tr>`).join('');
+ const crit=(f.criteres&&f.criteres.valeur||[]).map(c=>`<li><b>${esc(c.code)}. ${esc(c.libelle)}</b> — ${c.poids} ${esc(c.unite)}${c.sous_criteres.length?'<ul>'+c.sous_criteres.map(x=>`<li>${esc(x.code)} ${esc(x.libelle)} — ${x.poids}</li>`).join('')+'</ul>':''}</li>`).join('');
+ const pieces=(f.pieces_exigees&&f.pieces_exigees.valeur||[]).map(p=>`<li>${esc(p.piece)} <small>(${p.groupe})</small> ${p.eliminatoire?'<span class="badge red">Éliminatoire</span>':''}${p.obligatoire?'':' <span class="badge gray">Facultatif</span>'} ${sieSrc(p)}</li>`).join('');
+ const heures=(f.heures_insertion&&f.heures_insertion.valeur||[]).map(h=>`${esc(h.element)} : <b>${h.heures} h</b>`).join(' · ');
+ const alertes=(a.alertes||[]).map((x,i)=>`<div style="padding:11px 0;border-bottom:1px solid #e6ebf0"><span class="badge ${x.priorite==='haute'?'red':'amber'}">${esc(x.priorite||'')}</span> <b>${esc(x.titre)}</b> ${sieSrc(x)}<div class="small" style="margin:5px 0">${esc(x.detail||'')}</div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><select class="field" onchange="sieAlerteStatut(${x.id},this.value)">${SIE_STATUTS.map(t=>`<option${t===x.statut?' selected':''}>${t}</option>`).join('')}</select><button class="btn sm" onclick="sieAlerteVersRegistre(${i})">＋ Ajouter au registre de vigilance</button>${x.responsable?`<small>Responsable : ${esc(x.responsable)}</small>`:''}</div></div>`).join('');
+ const retenus=new Set(((state.fiches[id]||{}).lots||[]).filter(l=>l.retenu).map(l=>String(l.numero).replace(/^Lot\s*/,'').replace(/^Macro-lot\s*/,'ML')));
+ const qr=(an.vigilances_qr||[]).filter(v=>v.motifs.length).map(v=>{const cible=v.lots.some(l=>retenus.has(l));return `<div style="padding:8px 0;border-bottom:1px solid #eef1f4${cible?';background:#fffaf2':''}"><b>Q/R n°${v.question}</b> ${v.motifs.map(m=>`<span class="badge gray">${esc(m)}</span>`).join(' ')} ${v.lots.length?`<span class="badge ${cible?'amber':'blue'}">lots ${esc(v.lots.join(', '))}</span>`:''} ${sieSrc(v)}<div class="small">${esc(v.texte)}</div></div>`}).join('');
+ const types=Object.entries(s.par_type||{}).sort((x,y)=>y[1]-x[1]).map(([t,n])=>`${esc(t)} ${n}`).join(' · ');
+ return `<section class="card sectiongap">${head(`<div class="two-btns"><button class="btn" onclick="sieScanDce()">↻ Relancer l’analyse</button><button class="btn primary" onclick="siePrefillFiche()">▧ Pré-remplir la fiche de renseignement</button></div>`)}
+ <div class="card-body"><div class="callout"><b>${s.documents_lus} pièces lues sur ${s.documents}</b> (plans, archives et diagnostics non lus pour la fiche) · ${s.champs_extraits.length} champs trouvés · ${s.champs_a_verifier.length} à vérifier · ${s.questions_reponses} questions-réponses · ${s.doublons} doublons détectés${a.date?` · analyse du ${esc(a.date.slice(0,16).replace('T',' '))} (UTC)`:''}<div class="small" style="margin-top:6px">${types}</div><div class="small" style="margin-top:6px">${esc(an.avertissement)}</div></div>
+ <h4 class="dochead">Informations de la consultation</h4><div class="table-wrap"><table><thead><tr><th>Champ</th><th>Valeur extraite</th><th>Source</th></tr></thead><tbody>${lignes}</tbody></table></div>
+ <h4 class="dochead">Lots (${(f.lots&&f.lots.valeur||[]).length}) ${sieSrc(f.lots)}</h4><div class="table-wrap"><table><tbody>${lots||'<tr><td>À vérifier</td></tr>'}</tbody></table></div>
+ <div class="grid two" style="margin-top:6px"><div><h4 class="dochead">Critères de jugement ${sieSrc(f.criteres)}</h4><ul>${crit||'<li>À vérifier</li>'}</ul></div><div><h4 class="dochead">Pièces exigées par le RC</h4><ul>${pieces||'<li>À vérifier</li>'}</ul>${heures?`<p class="small"><b>Heures d’insertion :</b> ${heures}</p>`:''}</div></div>
+ <h4 class="dochead">Alertes à traiter (${(a.alertes||[]).length})</h4>${alertes||'<p class="small">Aucune alerte.</p>'}
+ <details style="margin-top:14px"><summary class="strong">Questions-réponses porteuses d’exigences (${(an.vigilances_qr||[]).filter(v=>v.motifs.length).length}) — surlignées si elles citent un lot coché dans la fiche</summary>${qr}</details>
+ </div></section>`;
+}
+const sieAnalyseAvantS1=analyse;
+analyse=function(){
+ let html=sieAnalyseAvantS1();const id=sieCurrentId();
+ if(!sieAnalyses[id]){sieAnalyses[id]={chargement:true};sieLoadAnalyse(id).then(()=>{if(state.view==='analyse'&&sieCurrentId()===id)render()})}
+ const k=html.indexOf('<h3>Repérer les exigences');const at=k>0?html.lastIndexOf('<section',k):-1;
+ return at>0?html.slice(0,at)+sieAnalysePanel()+html.slice(at):html+sieAnalysePanel();
+};
+sieScanDce=async function(){
+ const caseId=sieCurrentId();const area=document.getElementById('sie-findings');if(area)area.textContent='Analyse du DCE en cours sur le serveur local…';
+ toast('Analyse du DCE en cours…');
+ try{const data=await sieJson('/api/analyse/'+encodeURIComponent(caseId),{method:'POST'});
+  sieFindings[caseId]=data.findings;sieAnalyses[caseId]={analyse:data.analyse,fiche_interface:data.fiche_interface,alertes:data.alertes,date:new Date().toISOString()};
+  render();const s=data.analyse.synthese;toast(`${s.documents_lus} pièce(s) lue(s), ${s.champs_extraits.length} champ(s) trouvé(s), ${s.alertes} alerte(s).`);
+ }catch(e){alert('Analyse impossible : '+e.message);render()}
+};
+function siePrefillFiche(){
+ const id=sieCurrentId(),a=sieAnalyses[id];if(!a||!a.fiche_interface){alert('Lancez d’abord l’analyse du DCE.');return}
+ const f=ficheData(),src=a.fiche_interface,c=dceCase();let n=0;
+ for(const [k,v] of Object.entries(src)){
+  if(k==='lots'||k==='sources'||v===''||v==null)continue;
+  const cur=f[k];const vide=cur===undefined||cur===''||cur==='verifier'||(k==='objet'&&cur===c.name)||(k==='reference'&&cur===id);
+  if(vide&&cur!==v){f[k]=v;n++}
+ }
+ if(src.lots&&src.lots.length&&(!f.lots.length||confirm('Remplacer les '+f.lots.length+' lot(s) de la fiche par les '+src.lots.length+' lots trouvés dans le DCE ? Les cases « retenu » seront à recocher.'))){f.lots=src.lots.map(l=>({...l}));n++}
+ f.sourcesAuto='Pré-remplissage automatique du '+sieDate()+' — à vérifier dans les pièces :\n'+src.sources;
+ if(!f.sources)f.sources=f.sourcesAuto;
+ if(!c.deadline&&src.dateLimite)c.deadline=src.dateLimite.slice(0,10);
+ sieQueueSave();go('fiche');toast(n+' champ(s) pré-rempli(s) depuis le DCE. Les champs déjà saisis n’ont pas été modifiés.');
+}
+async function sieAlerteStatut(aid,statut){
+ try{await sieApi('/api/alertes/'+encodeURIComponent(sieCurrentId())+'/'+aid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({statut})});
+  const a=sieAnalyses[sieCurrentId()];const x=a&&a.alertes&&a.alertes.find(y=>y.id===aid);if(x)x.statut=statut;toast('Statut enregistré dans le registre local.')}
+ catch(e){alert(e.message)}
+}
+function sieAlerteVersRegistre(i){
+ const a=((sieAnalyses[sieCurrentId()]||{}).alertes||[])[i];if(!a)return;
+ const title=a.titre.slice(0,100);if(sieAlerts.some(x=>x.title===title&&x.source===(a.source||''))){toast('Cette alerte figure déjà au registre.');return}
+ const nid=Math.max(0,...sieAlerts.map(x=>Number(x.id)||0))+1;
+ sieAlerts.push({id:nid,category:a.categorie||'Administratif',title,source:a.source||'',page:a.page?String(a.page):'',action:'Vérifier dans la pièce source, puis traiter.',destination:(a.categorie==='Administratif'||a.categorie==='Complétude DCE')?'Pièces administratives':'Mémoire technique',status:'À vérifier',note:a.detail||'',memo:true});
+ sieQueueSave();render();toast('Alerte ajoutée au registre de vigilance.');
+}
+const sieSelectAvantS1=sieSelectCase;
+sieSelectCase=function(i){sieSelectAvantS1(i);const id=sieCurrentId();if(sieAnalyses[id]&&!sieAnalyses[id].analyse)delete sieAnalyses[id]};
+const sieFicheAvantS1=fiche;
+fiche=function(){
+ return sieFicheAvantS1().replace('<b>Maquette :</b> aucun document n’est analysé automatiquement. Complétez ou corrigez les informations à partir des pièces du DCE.',
+  '<b>Pré-remplissage :</b> dans « Analyse du DCE », le bouton « Pré-remplir la fiche » reprend les informations trouvées dans le DCE, avec leur source. Vérifiez et corrigez chaque champ.');
+};

@@ -73,3 +73,56 @@ def test_security_paths(client):
     assert resp.status_code in (400,404,405)
     resp=client.post('/api/files/AO1/upload',files={'file':('x.txt',b'file','text/plain')},data={'category':'dce','relpath':'../../x.txt'})
     assert resp.status_code==400
+
+
+def test_analyse_structuree_et_alertes(client):
+    rc=('Règlement de la consultation\nConsultation n° TEST-42\n'
+        'Date limite de remise des plis 15 / 11 / 2026 à 12 heures\n'
+        'Les candidats doivent obligatoirement effectuer une visite du site.\n').encode('utf-8')
+    r=client.post('/api/files/AO3/upload',files={'file':('RC.txt',rc,'text/plain')},data={'category':'dce','relpath':'DCE/TEST-42 RC.txt'})
+    assert r.status_code==200,r.text
+    body=client.post('/api/analyse/AO3').json()
+    fiche=body['analyse']['fiche']
+    assert fiche['reference']['valeur']=='TEST-42'
+    assert fiche['date_limite']['valeur']=='15/11/2026 à 12h00'
+    assert fiche['date_limite']['source']=='DCE/TEST-42 RC.txt'
+    assert fiche['visite']['valeur']=='oui'
+    assert body['fiche_interface']['visiteCondition']=='oui'
+    # Les alertes sont persistées et suivies par un humain
+    alertes=client.get('/api/alertes/AO3').json()['alertes']
+    visite=next(a for a in alertes if a['titre']=='Visite obligatoire')
+    assert visite['statut']=='À vérifier'
+    assert client.patch(f"/api/alertes/AO3/{visite['id']}",json={'statut':'Traité','responsable':'Chargé d’affaires'}).status_code==200
+    assert client.patch(f"/api/alertes/AO3/{visite['id']}",json={'statut':'N’importe quoi'}).status_code==400
+    # Relancer l'analyse ne réinitialise pas le suivi humain
+    client.post('/api/analyse/AO3')
+    visite=next(a for a in client.get('/api/alertes/AO3').json()['alertes'] if a['titre']=='Visite obligatoire')
+    assert visite['statut']=='Traité' and visite['responsable']=='Chargé d’affaires'
+    # Dernière analyse relisible, journal alimenté
+    assert client.get('/api/analyse/AO3').json()['analyse']['fiche']['reference']['valeur']=='TEST-42'
+    actions=[j['action'] for j in client.get('/api/journal/AO3').json()['journal']]
+    assert 'import_fichier' in actions and 'analyse_dce' in actions and 'alerte_modifiee' in actions
+
+
+def test_pas_de_melange_entre_consultations_proches(client):
+    # AO1 ne doit pas récupérer les brouillons d'AO10 (ancien filtre « consultation in clé »)
+    body={'state':{'lines':[],'docs':[]},'sieContexts':{},'fiches':{},'metresStore':{},
+          'sieMemoStore':{'AO1::1::Lot 1':{'sections':{'m':'texte AO1'}},'AO10::1::Lot 1':{'sections':{'m':'texte AO10'}}}}
+    assert client.put('/api/state',json=body).status_code==200
+    data=client.get('/api/export/AO1/dossier.zip')
+    with zipfile.ZipFile(io.BytesIO(data.content)) as z:
+        memos=z.read('Suivi/brouillons_memoire.json').decode('utf-8')
+    assert 'texte AO1' in memos and 'texte AO10' not in memos
+
+
+def test_import_par_blocs_rattache_a_sa_consultation(client):
+    uid='a'*32
+    r=client.post('/api/files/AO4/chunk',params={'upload_id':uid,'filename':'gros.txt','relpath':'DCE/gros.txt','index':0,'total':2},content=b'debut ')
+    assert r.json()=={'complete':False,'next':1}
+    # un autre dossier ne peut pas terminer cet import
+    r=client.post('/api/files/AO5/chunk',params={'upload_id':uid,'filename':'gros.txt','relpath':'DCE/gros.txt','index':1,'total':2},content=b'fin')
+    assert r.status_code==409
+    r=client.post('/api/files/AO4/chunk',params={'upload_id':uid,'filename':'gros.txt','relpath':'DCE/gros.txt','index':1,'total':2},content=b'fin')
+    assert r.json()['complete'] is True
+    doc=r.json()['file']
+    assert client.get(f"/api/files/AO4/{doc['id']}/download").content==b'debut fin'

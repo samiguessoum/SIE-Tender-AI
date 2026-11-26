@@ -2,6 +2,8 @@
 data/sie.db*
 data/files/
 data/.pending/
+data/texte/
+data/.derniers_tests.txt
 
 # Dossiers d'appels d'offres réels : confidentiels, jamais sur Git
 exemples/

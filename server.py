@@ -1,6 +1,7 @@
 """Serveur local SIE Tender Intelligence. Ne pas exposer sur Internet sans authentification."""
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
 import io
@@ -25,6 +26,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
+
+import analyse_dce
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get('SIE_DATA_DIR', ROOT / 'data')).resolve()
@@ -54,7 +57,30 @@ def setup():
             size INTEGER NOT NULL, sha256 TEXT NOT NULL, created TEXT NOT NULL,
             document_type TEXT NOT NULL DEFAULT '')''')
         cx.execute('CREATE INDEX IF NOT EXISTS idx_documents_consultation ON documents(consultation)')
+        # Résultats d'analyse du DCE (historisés : on garde chaque passage)
+        cx.execute('CREATE TABLE IF NOT EXISTS analyses (id INTEGER PRIMARY KEY AUTOINCREMENT, consultation TEXT NOT NULL, '
+                   'created TEXT NOT NULL, resultat TEXT NOT NULL)')
+        cx.execute('CREATE INDEX IF NOT EXISTS idx_analyses_consultation ON analyses(consultation)')
+        # Registre des alertes / exigences sourcées, avec suivi humain (statut, responsable)
+        cx.execute("CREATE TABLE IF NOT EXISTS alertes (id INTEGER PRIMARY KEY AUTOINCREMENT, consultation TEXT NOT NULL, "
+                   "cle TEXT NOT NULL, categorie TEXT, priorite TEXT, titre TEXT NOT NULL, detail TEXT, source TEXT, page INTEGER, "
+                   "lots TEXT, statut TEXT NOT NULL DEFAULT 'À vérifier', responsable TEXT NOT NULL DEFAULT '', "
+                   "note TEXT NOT NULL DEFAULT '', origine TEXT NOT NULL DEFAULT 'analyse', created TEXT NOT NULL, "
+                   "updated TEXT NOT NULL, UNIQUE(consultation, cle))")
+        # Journal des actions (traçabilité demandée par les spécifications)
+        cx.execute('CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, '
+                   'consultation TEXT, action TEXT NOT NULL, detail TEXT)')
+        cx.execute('CREATE INDEX IF NOT EXISTS idx_journal_consultation ON journal(consultation)')
 setup()
+
+
+def journaliser(consultation, action: str, detail=''):
+    try:
+        with LOCK, db() as cx:
+            cx.execute('INSERT INTO journal(ts,consultation,action,detail) VALUES (?,?,?,?)',
+                       (timestamp(), consultation, action, detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False)))
+    except sqlite3.Error:
+        pass
 
 
 def safe_id(value: str):
@@ -176,7 +202,11 @@ async def files_upload(consultation: str, file: UploadFile = File(...), category
     finally:
         temp.unlink(missing_ok=True)
         await file.close()
+    journaliser(consultation, 'import_fichier', {'fichier': relative, 'categorie': category, 'taille': saved['size']})
     return {'file':saved}
+
+
+_IMPORTS_EN_COURS: dict[str, asyncio.Lock] = {}
 
 
 @app.post('/api/files/{consultation}/chunk')
@@ -187,20 +217,35 @@ async def files_chunk(request: Request, consultation: str, upload_id: str, filen
         raise HTTPException(400,'Session d’import invalide')
     source=TEMP / (upload_id+'.part')
     pos=TEMP / (upload_id+'.next')
-    with LOCK:
+    owner=TEMP / (upload_id+'.owner')
+    # Verrou asyncio propre à cet import : l'ancien RLock de threading ne protégeait rien entre deux « await ».
+    verrou=_IMPORTS_EN_COURS.setdefault(upload_id, asyncio.Lock())
+    async with verrou:
+        if index == 0:
+            owner.write_text(consultation)
+        elif not owner.exists() or owner.read_text() != consultation:
+            raise HTTPException(409,'Import rattaché à une autre consultation ou expiré')
         expected=int(pos.read_text()) if pos.exists() else 0
         if index != expected:
             raise HTTPException(409,f'Bloc attendu : {expected}')
         size=0
-        with source.open('ab' if index else 'wb') as stream:
-            async for chunk in request.stream():
-                size+=len(chunk)
-                if size>10*1024*1024:
-                    raise HTTPException(413,'Bloc trop volumineux (10 Mo max)')
-                stream.write(chunk)
+        try:
+            with source.open('ab' if index else 'wb') as stream:
+                async for chunk in request.stream():
+                    size+=len(chunk)
+                    if size>10*1024*1024:
+                        raise HTTPException(413,'Bloc trop volumineux (10 Mo max)')
+                    stream.write(chunk)
+        except HTTPException:
+            source.unlink(missing_ok=True); pos.unlink(missing_ok=True); owner.unlink(missing_ok=True)
+            raise
         if index == total-1:
-            saved = record_document(consultation,category,relpath,source,document_type)
-            source.unlink(missing_ok=True); pos.unlink(missing_ok=True)
+            try:
+                saved = record_document(consultation,category,relpath,source,document_type)
+            finally:
+                source.unlink(missing_ok=True); pos.unlink(missing_ok=True); owner.unlink(missing_ok=True)
+                _IMPORTS_EN_COURS.pop(upload_id, None)
+            journaliser(consultation, 'import_fichier', {'fichier': relpath, 'categorie': category, 'taille': saved['size'], 'blocs': total})
             return {'complete':True,'file':saved}
         pos.write_text(str(index+1))
     return {'complete':False,'next':index+1}
@@ -218,6 +263,7 @@ def files_delete(consultation: str, doc_id: str):
     with LOCK, db() as cx:
         cx.execute('DELETE FROM documents WHERE consultation=? AND id=?',(consultation,doc_id))
     Path(row['storepath']).unlink(missing_ok=True)
+    journaliser(consultation, 'suppression_fichier', {'fichier': row['relpath']})
     return {'ok':True}
 
 
@@ -322,25 +368,117 @@ def scan_one(filename: str, contents: bytes, prefix=''):
     return out
 
 
+def _cle_alerte(a):
+    return hashlib.sha1(((a.get('titre') or '') + '|' + (a.get('source') or '')).encode('utf-8')).hexdigest()
+
+
+def _alertes(consultation):
+    with db() as cx:
+        rows = cx.execute("SELECT * FROM alertes WHERE consultation=? ORDER BY CASE priorite WHEN 'haute' THEN 0 "
+                          "WHEN 'moyenne' THEN 1 ELSE 2 END, id", (consultation,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d.pop('cle', None)
+        d['lots'] = json.loads(d['lots']) if d.get('lots') else []
+        out.append(d)
+    return out
+
+
 @app.post('/api/analyse/{consultation}')
 def analyse_documents(consultation: str):
+    # Analyse structurée du DCE : classement des pièces, lecture par priorité (Q/R, RC, CCAP, cadre de réponse...),
+    # extraction de la fiche avec sources, alertes et vigilances. Le repérage lexical d'origine est conservé en complément.
     safe_id(consultation)
     with db() as cx:
-        rows=cx.execute("SELECT * FROM documents WHERE consultation=? AND category='dce' ORDER BY filename", (consultation,)).fetchall()
-    findings=[]
-    scanned=0
-    for row in rows[:300]:
+        rows=cx.execute("SELECT * FROM documents WHERE consultation=? AND category='dce' ORDER BY relpath", (consultation,)).fetchall()
+    docs=[dict(r) for r in rows]
+    resultat=analyse_dce.analyser(docs, cache_dir=DATA/'texte')
+    ts=timestamp()
+    with LOCK, db() as cx:
+        cx.execute('INSERT INTO analyses(consultation,created,resultat) VALUES (?,?,?)',
+                   (consultation, ts, json.dumps(resultat, ensure_ascii=False)))
+        for a in resultat['alertes']:
+            cx.execute('INSERT INTO alertes(consultation,cle,categorie,priorite,titre,detail,source,page,lots,created,updated) '
+                       'VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(consultation,cle) DO UPDATE SET detail=excluded.detail, '
+                       'priorite=excluded.priorite, page=excluded.page, lots=excluded.lots, updated=excluded.updated',
+                       (consultation, _cle_alerte(a), a.get('categorie'), a.get('priorite'), a['titre'], a.get('detail'),
+                        a.get('source'), a.get('page'), json.dumps(a.get('lots') or []), ts, ts))
+    # Repérage lexical complémentaire : seulement les pièces écrites lues (jamais les plans), réparti entre elles.
+    lus = {e['relpath'] for e in resultat['inventaire'] if e.get('lu')}
+    ordre = sorted([d for d in docs if d['relpath'] in lus],
+                   key=lambda d: (analyse_dce.TYPES[analyse_dce.classer(d['relpath'])][0], d['relpath']))
+    reperage = []
+    for d in ordre:
         try:
-            with open(row['storepath'],'rb') as f:
-                content=f.read(35*1024*1024+1)
-            if len(content)>35*1024*1024:continue
-            scanned+=1
-            findings.extend(scan_one(row['relpath'],content))
-            if len(findings)>=180:break
+            with open(d['storepath'],'rb') as f:
+                contenu=f.read(35*1024*1024+1)
         except OSError:
             continue
-    return {'consultation':consultation,'documents_scanned':scanned,'findings':findings[:180],
-            'notice':'Repérage lexical indicatif, non exhaustif : chaque extrait doit être vérifié dans sa pièce source. Les PDF scannés sans texte ne sont pas analysés.'}
+        reperage.extend(scan_one(d['relpath'],contenu)[:15])
+        if len(reperage)>=150:
+            break
+    findings=[{'category':a.get('categorie') or 'Administratif','source':a.get('source') or '','page':a.get('page'),
+               'excerpt':(a['titre']+' — '+(a.get('detail') or ''))[:360],'status':'À vérifier','validated':False,
+               'priorite':a.get('priorite')} for a in resultat['alertes']]
+    findings+=[{'category':'Questions-réponses','source':v['source'],'page':v['page'],
+                'excerpt':f"Q/R n°{v['question']} : {v['texte'][:330]}",'status':'À vérifier','validated':False}
+               for v in resultat['vigilances_qr'] if v['motifs']]
+    findings+=reperage
+    syn = resultat['synthese']
+    journaliser(consultation, 'analyse_dce', {'documents': syn['documents'], 'lus': syn['documents_lus'],
+                                              'champs_extraits': len(syn['champs_extraits']), 'alertes': syn['alertes']})
+    return {'consultation':consultation,'documents_scanned':syn['documents_lus'],'findings':findings[:400],
+            'analyse':resultat,'fiche_interface':analyse_dce.fiche_pour_interface(resultat),
+            'alertes':_alertes(consultation),'notice':resultat['avertissement']}
+
+
+@app.get('/api/analyse/{consultation}')
+def analyse_derniere(consultation: str):
+    safe_id(consultation)
+    with db() as cx:
+        row=cx.execute('SELECT created,resultat FROM analyses WHERE consultation=? ORDER BY id DESC LIMIT 1',(consultation,)).fetchone()
+    if not row:
+        return {'consultation':consultation,'analyse':None,'alertes':_alertes(consultation)}
+    resultat=json.loads(row['resultat'])
+    return {'consultation':consultation,'date':row['created'],'analyse':resultat,
+            'fiche_interface':analyse_dce.fiche_pour_interface(resultat),'alertes':_alertes(consultation)}
+
+
+@app.get('/api/alertes/{consultation}')
+def alertes_liste(consultation: str):
+    safe_id(consultation)
+    return {'alertes':_alertes(consultation)}
+
+
+@app.patch('/api/alertes/{consultation}/{alerte_id}')
+async def alertes_maj(consultation: str, alerte_id: int, request: Request):
+    safe_id(consultation)
+    try:
+        body=await request.json()
+    except ValueError:
+        raise HTTPException(400,'JSON invalide')
+    champs={k:str(v)[:2000] for k,v in (body or {}).items() if k in ('statut','responsable','note')}
+    if not champs:
+        raise HTTPException(400,'Rien à modifier')
+    if 'statut' in champs and champs['statut'] not in ('À vérifier','En cours','Traité','Bloquant','Sans objet'):
+        raise HTTPException(400,'Statut invalide')
+    with LOCK, db() as cx:
+        n=cx.execute(f"UPDATE alertes SET {', '.join(k+'=?' for k in champs)}, updated=? WHERE consultation=? AND id=?",
+                     (*champs.values(), timestamp(), consultation, alerte_id)).rowcount
+    if not n:
+        raise HTTPException(404,'Alerte introuvable')
+    journaliser(consultation, 'alerte_modifiee', {'id': alerte_id, **champs})
+    return {'ok':True}
+
+
+@app.get('/api/journal/{consultation}')
+def journal_liste(consultation: str, limit: int = 200):
+    safe_id(consultation)
+    with db() as cx:
+        rows=cx.execute('SELECT ts,action,detail FROM journal WHERE consultation=? ORDER BY id DESC LIMIT ?',
+                        (consultation,max(1,min(limit,2000)))).fetchall()
+    return {'journal':[dict(r) for r in rows]}
 
 
 def workbook_for_case(consultation, snapshot):
@@ -413,7 +551,7 @@ def export_case(consultation: str):
         z.writestr('Suivi/controle_pieces.json',json.dumps(checks,ensure_ascii=False,indent=2))
         z.writestr('Suivi/alertes.json',json.dumps(active.get('alerts') or snapshot.get('sieAlerts',[]),ensure_ascii=False,indent=2))
         z.writestr('Suivi/decomptes.json',json.dumps((snapshot.get('metresStore',{}) or {}).get(consultation,[]),ensure_ascii=False,indent=2))
-        z.writestr('Suivi/brouillons_memoire.json',json.dumps({k:v for k,v in memo.items() if consultation in k},ensure_ascii=False,indent=2))
+        z.writestr('Suivi/brouillons_memoire.json',json.dumps({k:v for k,v in memo.items() if k.startswith(consultation+'::')},ensure_ascii=False,indent=2))
         csvfile=io.StringIO();writer=csv.writer(csvfile,delimiter=';');writer.writerow(['Code','Désignation','Unité','Quantité','PU HT','Montant HT'])
         for l in lines:
             qty,pu=l.get('qty'),l.get('price')
@@ -428,6 +566,7 @@ def export_case(consultation: str):
                 prefix=category_folder.get(row['category'],'Annexes')
                 z.write(path,arcname=prefix+'/'+row['id'][:8]+'_'+rel)
         z.writestr('Suivi/inventaire_documents.json',json.dumps([row_public(d) for d in docs],ensure_ascii=False,indent=2))
+    journaliser(consultation, 'export_dossier_zip', {'fichiers': len(docs)})
     return FileResponse(archive,filename=f'SIE_{consultation}_DOSSIER_DE_TRAVAIL.zip',media_type='application/zip',background=BackgroundTask(lambda: archive.unlink(missing_ok=True)))
 
 
