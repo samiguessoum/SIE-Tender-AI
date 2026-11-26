@@ -1,0 +1,1 @@
+Fichiers applicatifs locaux crées au premier lancement.

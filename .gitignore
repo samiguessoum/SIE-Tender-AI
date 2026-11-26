@@ -1,0 +1,19 @@
+# Données d'exécution (base SQLite, fichiers importés)
+data/sie.db*
+data/files/
+data/.pending/
+
+# Dossiers d'appels d'offres réels : confidentiels, jamais sur Git
+exemples/
+
+# Fichiers système
+.DS_Store
+Thumbs.db
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
