@@ -11,7 +11,15 @@ const PF_DEMO_DEVIS=new Set(initialQuotes.map(q=>q.family+'|'+q.supplier));
 initialLines.length=0; initialQuotes.length=0;          // une nouvelle consultation démarre vide
 demoBar=()=>'';
 addLine=function(){state.lines.push({id:'P.'+(state.lines.length+1),name:'Nouveau poste',unit:'U',qty:null,price:null});render()};
+// Sans aucune consultation, les fonctions historiques ne doivent pas planter (dceCase() vide).
+const pfDceCaseOrig=dceCase;dceCase=function(){return pfDceCaseOrig()||{id:'',name:'',client:'',lot:'',deadline:'',amount:0}};
+const pfFetchOrig=sieFetchFiles;sieFetchFiles=function(c=sieCurrentId()){return c?pfFetchOrig(c):Promise.resolve()};
+const pfSaveCtxOrig=sieSaveContext;sieSaveContext=function(){if((cases.length+state.newCases.length)&&pfToutes()[state.selected])pfSaveCtxOrig()};
 let pfPurge=false;
+// Si l'état n'a pas pu être lu au démarrage (serveur arrêté), on n'écrit RIEN : sinon un état vierge écraserait le vrai.
+const pfLectureKO=()=>/^Serveur indisponible/.test(sieStorageStatus);
+const pfPersistOrig=siePersist;
+siePersist=async function(){if(pfLectureKO()){sieDirty=false;return}return pfPersistOrig()};
 function pfPurger(){
  pfPurge=true;const actif=(pfToutes()[state.selected]||{}).id;let n=0;
  for(const arr of [cases,state.newCases])for(let i=arr.length-1;i>=0;i--)if(PF_DEMO.test(arr[i].id)){
@@ -320,6 +328,9 @@ const PF_VUES={dce:pfDce,dashboard:pfDashboard,affaires:pfAffaires,analyse:pfAna
 render=function(){
  if(state.view==='documents')state.view='final';
  if(state.view==='fournisseurs'&&typeof suppliers!=='function')state.view='dashboard';
+ if(sieReady&&pfLectureKO()){sieSaving=true;const app=document.getElementById('app');
+  if(app)app.innerHTML=pfTete('Serveur injoignable','Le serveur SIE ne répond pas. Rien n’est enregistré tant que la page n’a pas été rechargée avec le serveur lancé.')+`<div class="err">${esc(sieStorageStatus)}</div><p>Lancez <b>LANCER_MAC.command</b>, puis rechargez cette page.</p><button class="btn primary" onclick="location.reload()">Recharger</button>`;
+  renderNav();return}
  if(sieReady&&!pfPurge)pfPurger();
  if(!sieIA.statut&&typeof sieIAStatut==='function'&&sieReady){sieIA.statut={configure:false,chargement:true};sieIAStatut().then(()=>pfStatut())}
  const app=document.getElementById('app');if(!app)return;

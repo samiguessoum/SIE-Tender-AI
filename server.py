@@ -54,6 +54,7 @@ def db():
 def setup():
     with db() as cx:
         cx.execute('CREATE TABLE IF NOT EXISTS app_state (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL, updated TEXT NOT NULL)')
+        cx.execute('CREATE TABLE IF NOT EXISTS app_state_historique (id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL, updated TEXT NOT NULL)')
         cx.execute('''CREATE TABLE IF NOT EXISTS documents (
             id TEXT PRIMARY KEY, consultation TEXT NOT NULL, category TEXT NOT NULL,
             relpath TEXT NOT NULL, filename TEXT NOT NULL, storepath TEXT NOT NULL,
@@ -191,9 +192,50 @@ async def state_put(request: Request):
             raise ValueError('L’état doit être un objet')
     except (ValueError, UnicodeDecodeError):
         raise HTTPException(400, 'JSON invalide')
+    confirme = request.headers.get('X-SIE-Suppression') == 'confirmee'
     with LOCK, db() as cx:
+        ancien = cx.execute('SELECT payload, updated FROM app_state WHERE id=1').fetchone()
+        if ancien:
+            # Garde-fou : un état qui fait disparaître une consultation ayant des fichiers est refusé
+            # (cas d'une page chargée pendant que le serveur était arrêté), sauf suppression confirmée.
+            perdues = sorted(consultations_etat(json.loads(ancien['payload'])) - consultations_etat(state))
+            if perdues and not confirme:
+                avec_fichiers = [c for c in perdues
+                                 if cx.execute('SELECT 1 FROM documents WHERE consultation=? LIMIT 1', (c,)).fetchone()]
+                if avec_fichiers:
+                    raise HTTPException(409, 'Enregistrement refusé : il ferait disparaître la ou les consultations '
+                                        + ', '.join(avec_fichiers) + '. Rechargez la page.')
+            if ancien['payload'] != json.dumps(state, ensure_ascii=False):
+                cx.execute('INSERT INTO app_state_historique(payload,updated) VALUES(?,?)', (ancien['payload'], ancien['updated']))
+                cx.execute('DELETE FROM app_state_historique WHERE id NOT IN (SELECT id FROM app_state_historique ORDER BY id DESC LIMIT 200)')
         cx.execute('INSERT INTO app_state(id,payload,updated) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated=excluded.updated', (json.dumps(state,ensure_ascii=False),timestamp()))
     return {'ok':True,'saved_at':timestamp()}
+
+
+def consultations_etat(state):
+    st = state.get('state') or {}
+    return {c.get('id') for c in (state.get('baseCases') or []) + (st.get('newCases') or []) if isinstance(c, dict) and c.get('id')}
+
+
+@app.get('/api/state/historique')
+def state_historique():
+    # Versions précédentes de l'état (les 200 dernières) pour restauration en cas d'erreur.
+    with db() as cx:
+        rows = cx.execute('SELECT id, payload, updated FROM app_state_historique ORDER BY id DESC LIMIT 200').fetchall()
+    return {'versions': [{'id': r['id'], 'updated': r['updated'], 'consultations': sorted(consultations_etat(json.loads(r['payload'])))} for r in rows]}
+
+
+@app.post('/api/state/historique/{version}/restaurer')
+def state_restaurer(version: int):
+    with LOCK, db() as cx:
+        row = cx.execute('SELECT payload FROM app_state_historique WHERE id=?', (version,)).fetchone()
+        if row is None:
+            raise HTTPException(404, 'Version introuvable')
+        actuel = cx.execute('SELECT payload, updated FROM app_state WHERE id=1').fetchone()
+        if actuel:
+            cx.execute('INSERT INTO app_state_historique(payload,updated) VALUES(?,?)', (actuel['payload'], actuel['updated']))
+        cx.execute('INSERT INTO app_state(id,payload,updated) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated=excluded.updated', (row['payload'], timestamp()))
+    return {'ok': True}
 
 
 @app.get('/api/files/{consultation}')

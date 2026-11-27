@@ -203,3 +203,19 @@ def test_redaction_ia_simulee(client, monkeypatch):
     assert client.get('/api/ia/AO7/redactions').json()['redactions'][0]['critere']['code'] == '2.3'
     journal = client.get('/api/journal/AO7').json()
     assert 'Gestion des dechets de chantier' not in str(journal)   # le journal ne garde pas le texte
+
+
+def test_etat_protege_contre_la_perte_d_une_consultation(client):
+    etat = {'state': {'newCases': [{'id': 'AO42', 'name': 'x'}]}, 'baseCases': []}
+    assert client.put('/api/state', json=etat).status_code == 200
+    assert client.post('/api/files/AO42/upload', files={'file': ('RC.txt', b'reglement', 'text/plain')},
+                       data={'category': 'dce', 'relpath': 'RC.txt'}).status_code == 200
+    vide = {'state': {'newCases': []}, 'baseCases': []}
+    r = client.put('/api/state', json=vide)
+    assert r.status_code == 409 and 'AO42' in r.json()['detail']
+    assert client.get('/api/state').json()['data']['state']['newCases'][0]['id'] == 'AO42'
+    assert client.put('/api/state', json=vide, headers={'X-SIE-Suppression': 'confirmee'}).status_code == 200
+    versions = client.get('/api/state/historique').json()['versions']
+    assert 'AO42' in versions[0]['consultations']
+    assert client.post(f"/api/state/historique/{versions[0]['id']}/restaurer").status_code == 200
+    assert client.get('/api/state').json()['data']['state']['newCases'][0]['id'] == 'AO42'
